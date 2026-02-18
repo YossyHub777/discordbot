@@ -1,10 +1,13 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands, tasks, voice_recv
 import aiohttp
 import asyncio
 import random
 import os
 import uuid
+import wave
+import io
+import time
 from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
@@ -36,6 +39,12 @@ TRIGGER_SUMMARY = "/ダイス結果"
 TRIGGER_LEAVE = "もちもちさよなら"
 
 SEARCH_KEYWORDS = ["調べて", "最新", "パッチ", "ニュース", "情報", "アップデート", "攻略", "ギミック", "スキル回し", "どうすれば"]
+
+# 音声リスニング設定
+LISTEN_DURATION = 7       # 録音時間（秒）
+LISTEN_COOLDOWN = 30      # クールダウン（秒）
+listen_cooldowns = {}     # ギルドごとのクールダウン管理
+listening_sessions = {}   # ギルドごとの録音セッション管理
 
 # ==========================================
 # YOUTUBE DL SETUP
@@ -97,6 +106,18 @@ config_summary = types.GenerateContentConfig(
     """,
     max_output_tokens=800,
     temperature=0.5
+)
+
+# ④ 音声文字起こし用
+config_stt = types.GenerateContentConfig(
+    system_instruction="""
+    あなたは音声文字起こしアシスタントです。
+    与えられた音声データを正確に文字起こししてください。
+    テキストのみを出力し、余計な説明は不要です。
+    音声が聞き取れない場合は「聞き取れなかったのじゃ」と返してください。
+    """,
+    max_output_tokens=200,
+    temperature=0.1
 )
 
 def log_token_usage(response, context="Unknown"):
@@ -225,7 +246,7 @@ async def on_ready():
 async def mjoin(ctx):
     global current_active_channel_id, MUSIC_VOLUME
     if ctx.author.voice:
-        await ctx.author.voice.channel.connect()
+        await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
         current_active_channel_id = ctx.channel.id
         
         # ★追加: 接続時に音量を必ず20%にリセット
@@ -252,7 +273,8 @@ async def mjoin(ctx):
             f"/ダイス結果\n"
             f"!play [URLまたはキーワード ]\n"
             f"!stop\n"
-            f"!vol [音量0-80]"
+            f"!vol [音量0-80]\n"
+            f"!もちもち (声で質問)"
         )
         
         await ctx.send(greet + info_msg)
@@ -331,6 +353,148 @@ async def pause(ctx):
         elif ctx.voice_client.is_paused():
             ctx.voice_client.resume()
             await ctx.send("再開するぞ。")
+
+# ==========================================
+# LISTEN COMMAND (音声認識)
+# ==========================================
+@bot.command(name='もちもち')
+async def mochimochi_listen(ctx):
+    """ユーザーの音声を録音し、Gemini APIで文字起こし→AI応答する"""
+    global is_playing_music
+    guild_id = ctx.guild.id
+
+    # === 前提条件チェック ===
+    if not ctx.author.voice:
+        await ctx.send("ボイスチャンネルに入るのじゃ。")
+        return
+
+    vc = ctx.voice_client
+    if vc is None:
+        await ctx.send("先に `!mjoin` でわしを呼ぶのじゃ。")
+        return
+
+    # VoiceRecvClient かどうかチェック
+    if not isinstance(vc, voice_recv.VoiceRecvClient):
+        await ctx.send("音声受信に対応しておらぬ。`!mjoin` でわしを呼び直すのじゃ。")
+        return
+
+    # === クールダウンチェック ===
+    now = time.time()
+    last_used = listen_cooldowns.get(guild_id, 0)
+    remaining = LISTEN_COOLDOWN - (now - last_used)
+    if remaining > 0:
+        await ctx.send(f"⏳ まだ耳が休まっておらぬ。あと **{int(remaining)}秒** 待つのじゃ。")
+        return
+
+    # === 同時録音セッション制限 ===
+    if listening_sessions.get(guild_id, False):
+        await ctx.send("🔴 今はすでに聞いておるぞ。少し待つのじゃ。")
+        return
+
+    # === 音楽再生中チェック ===
+    if is_playing_music:
+        await ctx.send("🎵 音楽が流れておるから聞き取れぬ。`!stop` してから試すのじゃ。")
+        return
+
+    listening_sessions[guild_id] = True
+    listen_cooldowns[guild_id] = now
+
+    target_user = ctx.author
+    await ctx.send(f"👂 **{target_user.display_name}**、{LISTEN_DURATION}秒間聞いておるぞ。話すのじゃ！")
+
+    # === 録音処理 ===
+    wav_filename = f'listen_{uuid.uuid4()}.wav'
+    try:
+        # WaveSink + UserFilter で特定ユーザーのみ録音
+        sink = voice_recv.WaveSink(wav_filename)
+        filtered_sink = voice_recv.UserFilter(sink, target_user)
+
+        vc.listen(filtered_sink)
+
+        # 指定時間待機
+        await asyncio.sleep(LISTEN_DURATION)
+
+        # 録音停止
+        vc.stop_listening()
+
+        # ファイルが存在し、中身があるか確認
+        if not os.path.exists(wav_filename) or os.path.getsize(wav_filename) < 1000:
+            await ctx.send("🔇 何も聞こえなかったのじゃ。マイクを確認せよ。")
+            return
+
+        # === Gemini APIで文字起こし ===
+        async with ctx.typing():
+            try:
+                # 音声ファイルをバイナリで読み込み
+                with open(wav_filename, 'rb') as f:
+                    audio_data = f.read()
+
+                # Gemini APIに音声を送信して文字起こし
+                audio_part = types.Part.from_bytes(
+                    data=audio_data,
+                    mime_type="audio/wav"
+                )
+
+                stt_response = await client.aio.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=["この音声を文字起こしせよ。", audio_part],
+                    config=config_stt
+                )
+                log_token_usage(stt_response, "STT")
+
+                transcribed_text = stt_response.text.strip()
+
+                if not transcribed_text or "聞き取れなかった" in transcribed_text:
+                    await ctx.send("🔇 聞き取れなかったのじゃ。もう少しはっきり話すのじゃ。")
+                    return
+
+                # 文字起こし結果を表示
+                await ctx.send(f"📝 **聞き取り結果**: {transcribed_text}")
+
+                # === 文字起こし結果をGemini通常会話に送信 ===
+                # 入力制限チェック
+                if len(transcribed_text) > 100:
+                    transcribed_text = transcribed_text[:100]
+
+                use_search = any(k in transcribed_text for k in SEARCH_KEYWORDS) or "教えて" in transcribed_text
+                target_config = config_search if use_search else config_normal
+
+                history = [f"{msg.author.display_name}: {msg.content}" async for msg in ctx.channel.history(limit=15)]
+                full_prompt = f"履歴：\n" + "\n".join(reversed(history)) + f"\n\n質問：{transcribed_text}"
+
+                ai_response = await client.aio.models.generate_content(
+                    model=MODEL_NAME, contents=full_prompt, config=target_config
+                )
+                log_token_usage(ai_response, "ListenChat")
+
+                ai_text = ai_response.text
+                await ctx.send(ai_text)
+
+                # 読み上げ（検索結果でなければ）
+                if not use_search and not is_playing_music:
+                    fn = await generate_wav(ai_text, SPEAKER_ID)
+                    if fn: play_audio(ctx.guild, fn)
+
+            except Exception as e:
+                print(f"Listen STT/Chat Error: {e}")
+                await ctx.send("天界の耳が乱れておるのう。もう一度試すのじゃ。")
+
+    except Exception as e:
+        print(f"Listen Error: {e}")
+        await ctx.send("録音に失敗したのじゃ。")
+        # 安全に録音を停止
+        try:
+            if vc.is_listening():
+                vc.stop_listening()
+        except: pass
+
+    finally:
+        # 一時ファイルのクリーンアップ
+        try:
+            if os.path.exists(wav_filename):
+                os.remove(wav_filename)
+        except: pass
+        listening_sessions[guild_id] = False
 
 # ==========================================
 # EVENTS (Voice)
