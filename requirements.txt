@@ -1,0 +1,6 @@
+discord.py
+aiohttp
+google-genai
+yt-dlp
+PyNaCl
+numpy

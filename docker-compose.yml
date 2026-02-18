@@ -1,0 +1,25 @@
+services:
+  mochigami:
+    build: .
+    container_name: mochigami-bot
+    restart: always
+    network_mode: "host" # 音声パケット受信のためhostモード必須
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    environment:
+      - TZ=Asia/Tokyo
+      - VOICEVOX_URL=http://127.0.0.1:50021
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - ./mochigami.py:/app/mochigami.py # 開発用にローカルファイルをマウント
+
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-ubuntu20.04-latest
+    container_name: voicevox-engine
+    restart: always
+    ports:
+      - "50021:50021"
+    environment:
+      - TZ=Asia/Tokyo
