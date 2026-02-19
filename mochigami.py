@@ -20,6 +20,18 @@ import json
 VOICEVOX_URL = os.getenv('VOICEVOX_URL', 'http://127.0.0.1:50021')
 SPEAKER_ID = 3
 
+# 話者マップ（on_readyで動的生成）
+speaker_map = {}           # {"ずんだもん / ノーマル": 3, ...}
+character_styles = {}      # {"ずんだもん": [{"name": "ノーマル", "id": 3}, ...], ...}
+speaker_map_reverse = {}   # {3: "ずんだもん / ノーマル", ...}
+
+# ユーザー別ボイス設定
+user_voices = {}           # {"ユーザーID": {"speaker_id": 3, "name": "キャラ名"}}
+
+# JSON永続化ファイルパス
+USER_VOICES_FILE = "user_voices.json"
+BOT_CONFIG_FILE = "bot_config.json"
+
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN', '')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 
@@ -126,6 +138,73 @@ def log_token_usage(response, context="Unknown"):
             total = response.usage_metadata.total_token_count
             print(f"💰 [BILLING] Ctx:{context} | {MODEL_NAME} | Total: {total}")
     except: pass
+
+# ==========================================
+# VOICE CONFIG PERSISTENCE
+# ==========================================
+def load_user_voices():
+    global user_voices
+    try:
+        with open(USER_VOICES_FILE, 'r', encoding='utf-8') as f:
+            user_voices = json.load(f)
+        print(f"🔊 ユーザーボイス設定を読み込みました ({len(user_voices)}件)")
+    except:
+        user_voices = {}
+
+def save_user_voices():
+    with open(USER_VOICES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(user_voices, f, ensure_ascii=False, indent=2)
+
+def load_bot_config():
+    global SPEAKER_ID
+    try:
+        with open(BOT_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            SPEAKER_ID = config.get("speaker_id", 3)
+        print(f"🔊 もち神さまボイス: {speaker_map_reverse.get(SPEAKER_ID, 'ID=' + str(SPEAKER_ID))}")
+    except:
+        pass  # デフォルト値のまま
+
+def save_bot_config():
+    with open(BOT_CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump({"speaker_id": SPEAKER_ID, "name": speaker_map_reverse.get(SPEAKER_ID, "不明")}, f, ensure_ascii=False, indent=2)
+
+def get_user_speaker_id(user_id: str) -> int:
+    """ユーザーのマイボイスが設定されていればその speaker_id を、なければグローバル SPEAKER_ID を返す"""
+    if user_id in user_voices:
+        return user_voices[user_id].get("speaker_id", SPEAKER_ID)
+    return SPEAKER_ID
+
+async def fetch_speakers():
+    """VOICEVOXの /speakers エンドポイントから話者一覧を取得し、辞書を生成する"""
+    global speaker_map, character_styles, speaker_map_reverse
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f'{VOICEVOX_URL}/speakers') as resp:
+                if resp.status != 200:
+                    print(f"⚠️ VOICEVOX /speakers 取得失敗: {resp.status}")
+                    return
+                speakers = await resp.json()
+        
+        speaker_map = {}
+        character_styles = {}
+        speaker_map_reverse = {}
+        
+        for speaker in speakers:
+            char_name = speaker['name']
+            styles = []
+            for style in speaker['styles']:
+                style_name = style['name']
+                style_id = style['id']
+                full_name = f"{char_name} / {style_name}"
+                speaker_map[full_name] = style_id
+                speaker_map_reverse[style_id] = full_name
+                styles.append({"name": style_name, "id": style_id})
+            character_styles[char_name] = styles
+        
+        print(f"🔊 VOICEVOX話者一覧を取得しました ({len(character_styles)}キャラ, {len(speaker_map)}スタイル)")
+    except Exception as e:
+        print(f"⚠️ VOICEVOX話者一覧の取得に失敗: {e}")
 
 # ==========================================
 # BOT FUNCTIONS
@@ -236,8 +315,242 @@ async def before_gohan_police():
 
 @bot.event
 async def on_ready():
+    global SPEAKER_ID
     print(f'【降臨】{bot.user} (Model: {MODEL_NAME})')
+    
+    # VOICEVOXから話者一覧を取得
+    await fetch_speakers()
+    
+    # 設定ファイルの読み込み
+    load_bot_config()
+    load_user_voices()
+    
+    # スラッシュコマンドの同期
+    try:
+        synced = await bot.tree.sync()
+        print(f"📡 スラッシュコマンドを同期しました ({len(synced)}個)")
+    except Exception as e:
+        print(f"⚠️ スラッシュコマンド同期失敗: {e}")
+    
     if not random_monologue_task.is_running(): random_monologue_task.start()
+
+# ==========================================
+# SLASH COMMANDS (マイボイス・もちボイス)
+# ==========================================
+
+class CharacterSelectView(discord.ui.View):
+    """キャラクター選択の1段階目ビュー（ページング対応）"""
+    def __init__(self, mode: str, user_id: int, page: int = 0):
+        super().__init__(timeout=60)
+        self.mode = mode  # "myvoice" or "botvoice"
+        self.user_id = user_id
+        self.page = page
+        self.per_page = 25
+        
+        char_names = list(character_styles.keys())
+        self.total_pages = max(1, (len(char_names) + self.per_page - 1) // self.per_page)
+        
+        start = page * self.per_page
+        end = start + self.per_page
+        page_chars = char_names[start:end]
+        
+        if not page_chars:
+            return
+        
+        options = [discord.SelectOption(label=name, value=name) for name in page_chars]
+        
+        select = discord.ui.Select(
+            placeholder=f"キャラクターを選択 (ページ {page+1}/{self.total_pages})",
+            options=options,
+            custom_id=f"char_select_{mode}"
+        )
+        select.callback = self.char_selected
+        self.add_item(select)
+        
+        # ページングボタン
+        if self.total_pages > 1:
+            if page > 0:
+                prev_btn = discord.ui.Button(label="◀ 前へ", style=discord.ButtonStyle.secondary, custom_id="prev_page")
+                prev_btn.callback = self.prev_page
+                self.add_item(prev_btn)
+            if page < self.total_pages - 1:
+                next_btn = discord.ui.Button(label="次へ ▶", style=discord.ButtonStyle.secondary, custom_id="next_page")
+                next_btn.callback = self.next_page
+                self.add_item(next_btn)
+    
+    async def char_selected(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("これは他の人のメニューじゃ。", ephemeral=True)
+            return
+        char_name = interaction.data['values'][0]
+        styles = character_styles.get(char_name, [])
+        
+        if len(styles) == 1:
+            # スタイルが1つしかない場合はそのまま確定
+            await self._apply_voice(interaction, char_name, styles[0]['name'], styles[0]['id'])
+        else:
+            # スタイル選択ビューを表示
+            view = StyleSelectView(self.mode, self.user_id, char_name, styles)
+            await interaction.response.edit_message(
+                content=f"🎤 **{char_name}** のスタイルを選ぶのじゃ：",
+                view=view
+            )
+    
+    async def _apply_voice(self, interaction: discord.Interaction, char_name: str, style_name: str, style_id: int):
+        global SPEAKER_ID
+        full_name = f"{char_name} / {style_name}"
+        
+        if self.mode == "myvoice":
+            user_voices[str(self.user_id)] = {"speaker_id": style_id, "name": full_name}
+            save_user_voices()
+            await interaction.response.edit_message(
+                content=f"✅ マイボイスを **{full_name}** に設定したのじゃ！",
+                view=None
+            )
+        else:  # botvoice
+            SPEAKER_ID = style_id
+            save_bot_config()
+            await interaction.response.edit_message(
+                content=f"✅ もち神さまの声を **{full_name}** に変更したのじゃ！",
+                view=None
+            )
+            # サンプル再生
+            guild = interaction.guild
+            if guild and guild.voice_client and not is_playing_music:
+                fn = await generate_wav("声を変えたのじゃ！", SPEAKER_ID)
+                if fn:
+                    play_audio(guild, fn)
+    
+    async def prev_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("これは他の人のメニューじゃ。", ephemeral=True)
+            return
+        view = CharacterSelectView(self.mode, self.user_id, self.page - 1)
+        label = "マイボイス" if self.mode == "myvoice" else "もち神さまボイス"
+        await interaction.response.edit_message(
+            content=f"🎤 **{label}**: キャラクターを選ぶのじゃ：",
+            view=view
+        )
+    
+    async def next_page(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("これは他の人のメニューじゃ。", ephemeral=True)
+            return
+        view = CharacterSelectView(self.mode, self.user_id, self.page + 1)
+        label = "マイボイス" if self.mode == "myvoice" else "もち神さまボイス"
+        await interaction.response.edit_message(
+            content=f"🎤 **{label}**: キャラクターを選ぶのじゃ：",
+            view=view
+        )
+
+
+class StyleSelectView(discord.ui.View):
+    """スタイル選択の2段階目ビュー"""
+    def __init__(self, mode: str, user_id: int, char_name: str, styles: list):
+        super().__init__(timeout=60)
+        self.mode = mode
+        self.user_id = user_id
+        self.char_name = char_name
+        self.styles = styles
+        
+        options = [
+            discord.SelectOption(label=s['name'], value=str(s['id']), description=f"ID: {s['id']}")
+            for s in styles[:25]
+        ]
+        
+        select = discord.ui.Select(
+            placeholder="スタイルを選択",
+            options=options,
+            custom_id=f"style_select_{mode}"
+        )
+        select.callback = self.style_selected
+        self.add_item(select)
+        
+        # 戻るボタン
+        back_btn = discord.ui.Button(label="◀ キャラ選択に戻る", style=discord.ButtonStyle.secondary)
+        back_btn.callback = self.go_back
+        self.add_item(back_btn)
+    
+    async def style_selected(self, interaction: discord.Interaction):
+        global SPEAKER_ID
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("これは他の人のメニューじゃ。", ephemeral=True)
+            return
+        
+        style_id = int(interaction.data['values'][0])
+        style_name = next((s['name'] for s in self.styles if s['id'] == style_id), "不明")
+        full_name = f"{self.char_name} / {style_name}"
+        
+        if self.mode == "myvoice":
+            user_voices[str(self.user_id)] = {"speaker_id": style_id, "name": full_name}
+            save_user_voices()
+            await interaction.response.edit_message(
+                content=f"✅ マイボイスを **{full_name}** に設定したのじゃ！",
+                view=None
+            )
+        else:  # botvoice
+            SPEAKER_ID = style_id
+            save_bot_config()
+            await interaction.response.edit_message(
+                content=f"✅ もち神さまの声を **{full_name}** に変更したのじゃ！",
+                view=None
+            )
+            # サンプル再生
+            guild = interaction.guild
+            if guild and guild.voice_client and not is_playing_music:
+                fn = await generate_wav("声を変えたのじゃ！", SPEAKER_ID)
+                if fn:
+                    play_audio(guild, fn)
+    
+    async def go_back(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("これは他の人のメニューじゃ。", ephemeral=True)
+            return
+        view = CharacterSelectView(self.mode, self.user_id)
+        label = "マイボイス" if self.mode == "myvoice" else "もち神さまボイス"
+        await interaction.response.edit_message(
+            content=f"🎤 **{label}**: キャラクターを選ぶのじゃ：",
+            view=view
+        )
+
+
+@bot.tree.command(name="マイボイス", description="自分のチャット読み上げ声を設定するのじゃ")
+async def my_voice(interaction: discord.Interaction):
+    if not character_styles:
+        await interaction.response.send_message("⚠️ 話者一覧がまだ取得できておらぬ。少し待つのじゃ。", ephemeral=True)
+        return
+    
+    # 現在の設定を表示
+    user_id = str(interaction.user.id)
+    current = user_voices.get(user_id)
+    if current:
+        status = f"現在の設定: **{current['name']}**\n"
+    else:
+        status = "現在未設定（もち神さまの声で読み上げ中）\n"
+    
+    view = CharacterSelectView("myvoice", interaction.user.id)
+    await interaction.response.send_message(
+        f"🎤 **マイボイス設定**\n{status}キャラクターを選ぶのじゃ：",
+        view=view,
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="もちボイス", description="もち神さまの声を変更するのじゃ")
+async def bot_voice(interaction: discord.Interaction):
+    if not character_styles:
+        await interaction.response.send_message("⚠️ 話者一覧がまだ取得できておらぬ。少し待つのじゃ。", ephemeral=True)
+        return
+    
+    current_name = speaker_map_reverse.get(SPEAKER_ID, f"ID={SPEAKER_ID}")
+    
+    view = CharacterSelectView("botvoice", interaction.user.id)
+    await interaction.response.send_message(
+        f"🎤 **もち神さまボイス設定**\n現在の声: **{current_name}**\nキャラクターを選ぶのじゃ：",
+        view=view,
+        ephemeral=True
+    )
+
 
 # ==========================================
 # COMMANDS
@@ -665,7 +978,8 @@ async def on_message(message):
 
     if not message.content.startswith('!'):
         if not is_playing_music:
-            fn = await generate_wav(message.content, SPEAKER_ID)
+            user_speaker = get_user_speaker_id(str(message.author.id))
+            fn = await generate_wav(message.content, user_speaker)
             if fn: play_audio(message.guild, fn)
 
 bot.run(DISCORD_TOKEN)
