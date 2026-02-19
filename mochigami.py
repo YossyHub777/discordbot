@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands, tasks, voice_recv
+from discord import app_commands
 import aiohttp
 import asyncio
 import random
@@ -43,6 +44,9 @@ TTS_VOLUME = 1.0      # 読み上げ
 MUSIC_VOLUME = 0.2    # 音楽 (20%)
 
 current_active_channel_id = None
+
+# HTTPセッション（BOT起動時に初期化）
+http_session: aiohttp.ClientSession = None
 
 # トリガー設定
 TRIGGER_CHAT = "もちもち、"
@@ -179,12 +183,11 @@ async def fetch_speakers():
     """VOICEVOXの /speakers エンドポイントから話者一覧を取得し、辞書を生成する"""
     global speaker_map, character_styles, speaker_map_reverse
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f'{VOICEVOX_URL}/speakers') as resp:
-                if resp.status != 200:
-                    print(f"⚠️ VOICEVOX /speakers 取得失敗: {resp.status}")
-                    return
-                speakers = await resp.json()
+        async with http_session.get(f'{VOICEVOX_URL}/speakers') as resp:
+            if resp.status != 200:
+                print(f"⚠️ VOICEVOX /speakers 取得失敗: {resp.status}")
+                return
+            speakers = await resp.json()
         
         speaker_map = {}
         character_styles = {}
@@ -220,40 +223,33 @@ is_playing_music = False
 disconnect_task = None
 
 async def generate_wav(text, speaker=3):
+    """VOICEVOXでテキストからWAVを生成し、io.BytesIOで返す"""
     clean_text = text.replace("🔮", "").replace("**", "").replace("【", "").replace("】", "").replace("\n", "。")
     params = {'text': clean_text, 'speaker': speaker}
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f'{VOICEVOX_URL}/audio_query', params=params) as resp:
-                if resp.status != 200: return None
-                query = await resp.json()
-            async with session.post(f'{VOICEVOX_URL}/synthesis', params=params, json=query) as resp:
-                if resp.status != 200: return None
-                data = await resp.read()
-                filename = f'voice_{uuid.uuid4()}.wav'
-                with open(filename, mode='wb') as f: f.write(data)
-                return filename
+        async with http_session.post(f'{VOICEVOX_URL}/audio_query', params=params) as resp:
+            if resp.status != 200: return None
+            query = await resp.json()
+        async with http_session.post(f'{VOICEVOX_URL}/synthesis', params=params, json=query) as resp:
+            if resp.status != 200: return None
+            data = await resp.read()
+            return io.BytesIO(data)
     except: return None
 
-def play_audio(guild, filename):
+def play_audio(guild, audio_data: io.BytesIO):
+    """io.BytesIOの音声データをVCでpipe再生する"""
     global is_playing_music
     if guild.voice_client is None or is_playing_music:
-        try: os.remove(filename)
-        except: pass
         return
 
     if guild.voice_client.is_playing():
         guild.voice_client.stop()
 
-    source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(filename, executable='ffmpeg'), volume=TTS_VOLUME)
-    
-    def after_playing(error):
-        try:
-            if os.path.exists(filename):
-                os.remove(filename)
-        except: pass
-
-    guild.voice_client.play(source, after=after_playing)
+    source = discord.PCMVolumeTransformer(
+        discord.FFmpegPCMAudio(audio_data, pipe=True, executable='ffmpeg'),
+        volume=TTS_VOLUME
+    )
+    guild.voice_client.play(source)
 
 # ==========================================
 # TASKS
@@ -325,10 +321,14 @@ async def on_ready():
     load_bot_config()
     load_user_voices()
     
-    # スラッシュコマンドの同期
+    # スラッシュコマンドの同期（グローバル＋ギルド即時反映）
     try:
         synced = await bot.tree.sync()
-        print(f"📡 スラッシュコマンドを同期しました ({len(synced)}個)")
+        print(f"📡 グローバル同期完了 ({len(synced)}個)")
+        for guild in bot.guilds:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+        print(f"📡 ギルド即時同期完了 ({len(bot.guilds)}サーバー)")
     except Exception as e:
         print(f"⚠️ スラッシュコマンド同期失敗: {e}")
     
@@ -552,9 +552,231 @@ async def bot_voice(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="デザートアルバム", description="デザートのアルバムを表示するのじゃ")
+async def desert_album(interaction: discord.Interaction):
+    msg = (
+        "🎵 デザートのアルバムじゃ。聴くがよい。\n\n"
+        "🏜️ **DESERT MEMBER SONG 2024**\n"
+        "https://soundcloud.com/shouyu-mochi/sets/desert-theme-song/s-0y6FdI6ccI3?si=9a004c595feb46e7b67547a3ca0a1638&utm_source=clipboard&utm_medium=text&utm_campaign=social_sharing\n\n"
+        "🎤 **DESERT MEMBER SONG 2025**\n"
+        "https://soundcloud.com/shouyu-mochi/sets/desert-member-song-2025-test/s-klf6JFeRYpP?si=276edc9d114643028d7c334f07d9c1a7&utm_source=clipboard&utm_medium=text&utm_campaign=social_sharing"
+    )
+    await interaction.response.send_message(msg)
+
+
 # ==========================================
-# COMMANDS
+# SLASH COMMANDS (もちもち)
 # ==========================================
+
+
+@bot.tree.command(name="もちもち", description="声で質問するのじゃ")
+async def slash_mochimochi_listen(interaction: discord.Interaction):
+    """ユーザーの音声を録音し、Gemini APIで文字起こし→AI応答する"""
+    global is_playing_music
+    guild_id = interaction.guild_id
+
+    # === 前提条件チェック ===
+    if not interaction.user.voice:
+        await interaction.response.send_message("ボイスチャンネルに入るのじゃ。", ephemeral=True)
+        return
+
+    vc = interaction.guild.voice_client
+    if vc is None:
+        await interaction.response.send_message("先に `!mjoin` でわしを呼ぶのじゃ。", ephemeral=True)
+        return
+
+    # VoiceRecvClient かどうかチェック
+    if not isinstance(vc, voice_recv.VoiceRecvClient):
+        await interaction.response.send_message("音声受信に対応しておらぬ。`!mjoin` でわしを呼び直すのじゃ。", ephemeral=True)
+        return
+
+    # === クールダウンチェック ===
+    now = time.time()
+    last_used = listen_cooldowns.get(guild_id, 0)
+    remaining = LISTEN_COOLDOWN - (now - last_used)
+    if remaining > 0:
+        await interaction.response.send_message(f"⏳ まだ耳が休まっておらぬ。あと **{int(remaining)}秒** 待つのじゃ。", ephemeral=True)
+        return
+
+    # === 同時録音セッション制限 ===
+    if listening_sessions.get(guild_id, False):
+        await interaction.response.send_message("🔴 今はすでに聞いておるぞ。少し待つのじゃ。", ephemeral=True)
+        return
+
+    # === 音楽再生中チェック ===
+    if is_playing_music:
+        await interaction.response.send_message("🎵 音楽が流れておるから聞き取れぬ。`/stop` してから試すのじゃ。", ephemeral=True)
+        return
+
+    # 3秒以内にdeferで応答
+    await interaction.response.defer()
+
+    listening_sessions[guild_id] = True
+    listen_cooldowns[guild_id] = now
+
+    target_user = interaction.user
+    await interaction.followup.send(f"👂 **{target_user.display_name}**、{LISTEN_DURATION}秒間聞いておるぞ。話すのじゃ！")
+
+    # === 録音処理 ===
+    wav_filename = f'listen_{uuid.uuid4()}.wav'
+    try:
+        # WaveSink + UserFilter で特定ユーザーのみ録音
+        sink = voice_recv.WaveSink(wav_filename)
+        filtered_sink = voice_recv.UserFilter(sink, target_user)
+
+        vc.listen(filtered_sink)
+
+        # 指定時間待機
+        await asyncio.sleep(LISTEN_DURATION)
+
+        # 録音停止
+        vc.stop_listening()
+
+        # ファイルが存在し、中身があるか確認
+        if not os.path.exists(wav_filename) or os.path.getsize(wav_filename) < 1000:
+            await interaction.followup.send("🔇 何も聞こえなかったのじゃ。マイクを確認せよ。")
+            return
+
+        # === Gemini APIで文字起こし ===
+        try:
+            # 音声ファイルをバイナリで読み込み
+            with open(wav_filename, 'rb') as f:
+                audio_data = f.read()
+
+            # Gemini APIに音声を送信して文字起こし
+            audio_part = types.Part.from_bytes(
+                data=audio_data,
+                mime_type="audio/wav"
+            )
+
+            stt_response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=["この音声を文字起こしせよ。", audio_part],
+                config=config_stt
+            )
+            log_token_usage(stt_response, "STT")
+
+            transcribed_text = stt_response.text.strip()
+
+            if not transcribed_text or "聞き取れなかった" in transcribed_text:
+                await interaction.followup.send("🔇 聞き取れなかったのじゃ。もう少しはっきり話すのじゃ。")
+                return
+
+            # 文字起こし結果を表示
+            await interaction.followup.send(f"📝 **聞き取り結果**: {transcribed_text}")
+
+            # === 文字起こし結果をGemini通常会話に送信 ===
+            # 入力制限チェック
+            if len(transcribed_text) > 100:
+                transcribed_text = transcribed_text[:100]
+
+            use_search = any(k in transcribed_text for k in SEARCH_KEYWORDS) or "教えて" in transcribed_text
+            target_config = config_search if use_search else config_normal
+
+            channel = interaction.channel
+            history = [f"{msg.author.display_name}: {msg.content}" async for msg in channel.history(limit=15)]
+            full_prompt = f"履歴：\n" + "\n".join(reversed(history)) + f"\n\n質問：{transcribed_text}"
+
+            ai_response = await client.aio.models.generate_content(
+                model=MODEL_NAME, contents=full_prompt, config=target_config
+            )
+            log_token_usage(ai_response, "ListenChat")
+
+            ai_text = ai_response.text
+            await interaction.followup.send(ai_text)
+
+            # 読み上げ（検索結果でなければ）
+            if not use_search and not is_playing_music:
+                fn = await generate_wav(ai_text, SPEAKER_ID)
+                if fn: play_audio(interaction.guild, fn)
+
+        except Exception as e:
+            print(f"Listen STT/Chat Error: {e}")
+            await interaction.followup.send("天界の耳が乱れておるのう。もう一度試すのじゃ。")
+
+    except Exception as e:
+        print(f"Listen Error: {e}")
+        await interaction.followup.send("録音に失敗したのじゃ。")
+        # 安全に録音を停止
+        try:
+            if vc.is_listening():
+                vc.stop_listening()
+        except: pass
+
+    finally:
+        # 一時ファイルのクリーンアップ（録音用ファイルはディスクI/O必須）
+        try:
+            if os.path.exists(wav_filename):
+                os.remove(wav_filename)
+        except: pass
+        listening_sessions[guild_id] = False
+
+
+# ==========================================
+# PREFIX COMMANDS (play / stop / vol / mjoin / pause)
+# ==========================================
+@bot.command()
+async def vol(ctx, volume: int):
+    global MUSIC_VOLUME
+    if not 0 <= volume <= 80:
+        await ctx.send("❌ 0～80%の範囲で指定せよ。")
+        return
+    MUSIC_VOLUME = volume / 100.0
+    if ctx.voice_client and ctx.voice_client.source and is_playing_music:
+        ctx.voice_client.source.volume = MUSIC_VOLUME
+    await ctx.send(f"🔊 音楽の音量を **{volume}%** に変更したぞ。")
+
+@bot.command()
+async def play(ctx, *, query: str):
+    global is_playing_music
+    if ctx.voice_client is None:
+        if ctx.author.voice: await ctx.author.voice.channel.connect()
+        else: return await ctx.send("ボイスチャンネルに入るのじゃ。")
+    
+    msg = await ctx.send(f"「{query}」のレコードを探しておる...")
+
+    if query.startswith("http"):
+        search_query = query
+    else:
+        search_query = f"ytsearch:{query} bgm"
+
+    try:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_query, download=False))
+        
+        if 'entries' in data:
+            data = data['entries'][0]
+        
+        url = data['url']
+        title = data.get('title', '不明な曲')
+        
+        if ctx.voice_client.is_playing(): ctx.voice_client.stop()
+        
+        source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(url, **ffmpeg_opts), volume=MUSIC_VOLUME)
+        
+        def after_playing(error):
+            global is_playing_music
+            is_playing_music = False
+            
+        ctx.voice_client.play(source, after=after_playing)
+        is_playing_music = True
+        
+        await msg.edit(content=f"🎵 **再生中**: {title} (音量: {int(MUSIC_VOLUME*100)}%)")
+    except Exception as e:
+        print(f"Play Error: {e}")
+        await msg.edit(content="見つからなんだ、または再生できぬ。")
+        is_playing_music = False
+
+@bot.command()
+async def stop(ctx):
+    global is_playing_music
+    if ctx.voice_client and ctx.voice_client.is_playing():
+        ctx.voice_client.stop()
+        is_playing_music = False
+        await ctx.send("止めたぞ。")
+    else:
+        await ctx.send("何も流れておらぬ。")
+
 @bot.command()
 async def mjoin(ctx):
     global current_active_channel_id, MUSIC_VOLUME
@@ -584,78 +806,19 @@ async def mjoin(ctx):
             f"もちもち、ソーチョー\n"
             f"/dice [最大値]\n"
             f"/ダイス結果\n"
-            f"!play [URLまたはキーワード ]\n"
+            f"!play [URLまたはキーワード]\n"
             f"!stop\n"
             f"!vol [音量0-80]\n"
-            f"!もちもち (声で質問)"
+            f"/もちもち (声で質問)\n"
+            f"/もちボイス (もち神さまの声を変更)\n"
+            f"/マイボイス (自分の読み上げ声を変更)\n"
+            f"/デザートアルバム\n"
+            f"もちもちさよなら"
         )
         
         await ctx.send(greet + info_msg)
         fn = await generate_wav(greet, SPEAKER_ID)
         if fn: play_audio(ctx.guild, fn)
-
-@bot.command()
-async def vol(ctx, volume: int):
-    global MUSIC_VOLUME
-    if not 0 <= volume <= 80:
-        await ctx.send("❌ 0～80%の範囲で指定せよ。")
-        return
-    MUSIC_VOLUME = volume / 100.0
-    if ctx.voice_client and ctx.voice_client.source and is_playing_music:
-        ctx.voice_client.source.volume = MUSIC_VOLUME
-    await ctx.send(f"🔊 音楽の音量を **{volume}%** に変更したぞ。")
-
-@bot.command()
-async def play(ctx, *, query: str):
-    global is_playing_music
-    if ctx.voice_client is None:
-        if ctx.author.voice: await ctx.author.voice.channel.connect()
-        else: return await ctx.send("ボイスチャンネルに入るのじゃ。")
-    
-    msg = await ctx.send(f"「{query}」のレコードを探しておる...")
-
-    if query.startswith("http"):
-        search_query = query
-    else:
-        search_query = f"ytsearch:{query} bgm"
-
-    try:
-        # Python 3.10+ 推奨 (get_running_loop)
-        loop = asyncio.get_running_loop()
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_query, download=False))
-        
-        if 'entries' in data:
-            data = data['entries'][0]
-        
-        filename = data['url']
-        title = data.get('title', '不明な曲')
-        
-        if ctx.voice_client.is_playing(): ctx.voice_client.stop()
-        
-        source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(filename, **ffmpeg_opts), volume=MUSIC_VOLUME)
-        
-        def after_playing(error):
-            global is_playing_music
-            is_playing_music = False
-            
-        ctx.voice_client.play(source, after=after_playing)
-        is_playing_music = True
-        
-        await msg.edit(content=f"🎵 **再生中**: {title} (音量: {int(MUSIC_VOLUME*100)}%)")
-    except Exception as e:
-        print(f"Play Error: {e}")
-        await msg.edit(content="見つからなんだ、または再生できぬ。")
-        is_playing_music = False
-
-@bot.command()
-async def stop(ctx):
-    global is_playing_music
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
-        is_playing_music = False
-        await ctx.send("止めたぞ。")
-    else:
-        await ctx.send("何も流れておらぬ。")
 
 @bot.command()
 async def pause(ctx):
@@ -666,148 +829,6 @@ async def pause(ctx):
         elif ctx.voice_client.is_paused():
             ctx.voice_client.resume()
             await ctx.send("再開するぞ。")
-
-# ==========================================
-# LISTEN COMMAND (音声認識)
-# ==========================================
-@bot.command(name='もちもち')
-async def mochimochi_listen(ctx):
-    """ユーザーの音声を録音し、Gemini APIで文字起こし→AI応答する"""
-    global is_playing_music
-    guild_id = ctx.guild.id
-
-    # === 前提条件チェック ===
-    if not ctx.author.voice:
-        await ctx.send("ボイスチャンネルに入るのじゃ。")
-        return
-
-    vc = ctx.voice_client
-    if vc is None:
-        await ctx.send("先に `!mjoin` でわしを呼ぶのじゃ。")
-        return
-
-    # VoiceRecvClient かどうかチェック
-    if not isinstance(vc, voice_recv.VoiceRecvClient):
-        await ctx.send("音声受信に対応しておらぬ。`!mjoin` でわしを呼び直すのじゃ。")
-        return
-
-    # === クールダウンチェック ===
-    now = time.time()
-    last_used = listen_cooldowns.get(guild_id, 0)
-    remaining = LISTEN_COOLDOWN - (now - last_used)
-    if remaining > 0:
-        await ctx.send(f"⏳ まだ耳が休まっておらぬ。あと **{int(remaining)}秒** 待つのじゃ。")
-        return
-
-    # === 同時録音セッション制限 ===
-    if listening_sessions.get(guild_id, False):
-        await ctx.send("🔴 今はすでに聞いておるぞ。少し待つのじゃ。")
-        return
-
-    # === 音楽再生中チェック ===
-    if is_playing_music:
-        await ctx.send("🎵 音楽が流れておるから聞き取れぬ。`!stop` してから試すのじゃ。")
-        return
-
-    listening_sessions[guild_id] = True
-    listen_cooldowns[guild_id] = now
-
-    target_user = ctx.author
-    await ctx.send(f"👂 **{target_user.display_name}**、{LISTEN_DURATION}秒間聞いておるぞ。話すのじゃ！")
-
-    # === 録音処理 ===
-    wav_filename = f'listen_{uuid.uuid4()}.wav'
-    try:
-        # WaveSink + UserFilter で特定ユーザーのみ録音
-        sink = voice_recv.WaveSink(wav_filename)
-        filtered_sink = voice_recv.UserFilter(sink, target_user)
-
-        vc.listen(filtered_sink)
-
-        # 指定時間待機
-        await asyncio.sleep(LISTEN_DURATION)
-
-        # 録音停止
-        vc.stop_listening()
-
-        # ファイルが存在し、中身があるか確認
-        if not os.path.exists(wav_filename) or os.path.getsize(wav_filename) < 1000:
-            await ctx.send("🔇 何も聞こえなかったのじゃ。マイクを確認せよ。")
-            return
-
-        # === Gemini APIで文字起こし ===
-        async with ctx.typing():
-            try:
-                # 音声ファイルをバイナリで読み込み
-                with open(wav_filename, 'rb') as f:
-                    audio_data = f.read()
-
-                # Gemini APIに音声を送信して文字起こし
-                audio_part = types.Part.from_bytes(
-                    data=audio_data,
-                    mime_type="audio/wav"
-                )
-
-                stt_response = await client.aio.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=["この音声を文字起こしせよ。", audio_part],
-                    config=config_stt
-                )
-                log_token_usage(stt_response, "STT")
-
-                transcribed_text = stt_response.text.strip()
-
-                if not transcribed_text or "聞き取れなかった" in transcribed_text:
-                    await ctx.send("🔇 聞き取れなかったのじゃ。もう少しはっきり話すのじゃ。")
-                    return
-
-                # 文字起こし結果を表示
-                await ctx.send(f"📝 **聞き取り結果**: {transcribed_text}")
-
-                # === 文字起こし結果をGemini通常会話に送信 ===
-                # 入力制限チェック
-                if len(transcribed_text) > 100:
-                    transcribed_text = transcribed_text[:100]
-
-                use_search = any(k in transcribed_text for k in SEARCH_KEYWORDS) or "教えて" in transcribed_text
-                target_config = config_search if use_search else config_normal
-
-                history = [f"{msg.author.display_name}: {msg.content}" async for msg in ctx.channel.history(limit=15)]
-                full_prompt = f"履歴：\n" + "\n".join(reversed(history)) + f"\n\n質問：{transcribed_text}"
-
-                ai_response = await client.aio.models.generate_content(
-                    model=MODEL_NAME, contents=full_prompt, config=target_config
-                )
-                log_token_usage(ai_response, "ListenChat")
-
-                ai_text = ai_response.text
-                await ctx.send(ai_text)
-
-                # 読み上げ（検索結果でなければ）
-                if not use_search and not is_playing_music:
-                    fn = await generate_wav(ai_text, SPEAKER_ID)
-                    if fn: play_audio(ctx.guild, fn)
-
-            except Exception as e:
-                print(f"Listen STT/Chat Error: {e}")
-                await ctx.send("天界の耳が乱れておるのう。もう一度試すのじゃ。")
-
-    except Exception as e:
-        print(f"Listen Error: {e}")
-        await ctx.send("録音に失敗したのじゃ。")
-        # 安全に録音を停止
-        try:
-            if vc.is_listening():
-                vc.stop_listening()
-        except: pass
-
-    finally:
-        # 一時ファイルのクリーンアップ
-        try:
-            if os.path.exists(wav_filename):
-                os.remove(wav_filename)
-        except: pass
-        listening_sessions[guild_id] = False
 
 # ==========================================
 # EVENTS (Voice)
@@ -949,7 +970,7 @@ async def on_message(message):
         if user_question == "ソーチョー":
             await message.channel.send("https://knt-a.com/fauxhollows/")
             if not is_playing_music:
-                fn = await generate_wav("ソーチョーの答え合わせじゃな。", SPEAKER_ID)
+                fn = await generate_wav("ソーチョー", SPEAKER_ID)
                 if fn: play_audio(message.guild, fn)
             return
 
@@ -982,4 +1003,15 @@ async def on_message(message):
             fn = await generate_wav(message.content, user_speaker)
             if fn: play_audio(message.guild, fn)
 
-bot.run(DISCORD_TOKEN)
+# ==========================================
+# BOT STARTUP
+# ==========================================
+async def main():
+    global http_session
+    http_session = aiohttp.ClientSession()
+    try:
+        await bot.start(DISCORD_TOKEN)
+    finally:
+        await http_session.close()
+
+asyncio.run(main())
