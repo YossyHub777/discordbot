@@ -62,6 +62,17 @@ LISTEN_COOLDOWN = 30      # クールダウン（秒）
 listen_cooldowns = {}     # ギルドごとのクールダウン管理
 listening_sessions = {}   # ギルドごとの録音セッション管理
 
+# 会話検知・自動相槌設定
+voice_chat_mode = False           # 会話モードのオン・オフ
+voice_rolling_buffer = []         # ローリングバッファ（60秒分）
+voice_last_triggered = None       # 最後に発動した時刻
+voice_last_audio_time = None      # 最後に音声を受信した時刻
+voice_buffer_active = False       # バッファ録音中かどうか
+VOICE_SILENT_SECONDS = 30         # 無音判定までの秒数
+VOICE_BUFFER_SECONDS = 60         # バッファ保持時間（秒）
+VOICE_COOLDOWN_MINUTES = 20       # クールダウン（分）
+VOICE_BUFFER_RESTART_MINUTES = 19 # クールダウン中のバッファ再開タイミング（分）
+
 # ==========================================
 # YOUTUBE DL SETUP
 # ==========================================
@@ -91,12 +102,26 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ① 通常会話用
 config_normal = types.GenerateContentConfig(
+    tools=tool_search,
+    system_instruction="""
+    あなたは「もち神さま」というFF14に精通した「幼き賢神」です。
+    ・回答は必ず「1文のみ（40文字以内）」で行うこと。
+    ・一人称「わし」、語尾は「～なのじゃ」「～のう」「～じゃぞ」。
+    ・会話に関連する最新のニュースやゲームのパッチ情報が必要な場合は
+    　Google検索を使用して確認した上で回答せよ。
+    """,
+    max_output_tokens=150,
+    temperature=0.7
+)
+
+# ⑤ 独り言・ごはん警察・挨拶など自発発言用（Google検索なし）
+config_monologue = types.GenerateContentConfig(
     system_instruction="""
     あなたは「もち神さま」というFF14に精通した「幼き賢神」です。
     ・回答は必ず「1文のみ（40文字以内）」で行うこと。
     ・一人称「わし」、語尾は「～なのじゃ」「～のう」「～じゃぞ」。
     """,
-    max_output_tokens=150, 
+    max_output_tokens=150,
     temperature=0.7
 )
 
@@ -252,8 +277,255 @@ def play_audio(guild, audio_data: io.BytesIO):
     guild.voice_client.play(source)
 
 # ==========================================
+# ROLLING BUFFER SINK（会話検知用）
+# ==========================================
+class RollingBufferSink(voice_recv.AudioSink):
+    """全ユーザーの音声をローリングバッファに蓄積するシンク"""
+    def __init__(self, buffer_seconds=60):
+        super().__init__()
+        self.buffer_seconds = buffer_seconds
+        self._buffer = []  # [(timestamp, pcm_bytes), ...]
+
+    def wants_opus(self):
+        return False
+
+    def write(self, user, data):
+        global voice_last_audio_time
+        now = time.time()
+        voice_last_audio_time = now
+        # PCMデータをタイムスタンプ付きで保存
+        self._buffer.append((now, data.pcm))
+        # 古いデータを削除
+        cutoff = now - self.buffer_seconds
+        self._buffer = [(t, d) for t, d in self._buffer if t >= cutoff]
+
+    def cleanup(self):
+        self._buffer.clear()
+
+    def get_audio_bytes(self):
+        """バッファ内の全PCMデータを結合してbytesとして返す"""
+        if not self._buffer:
+            return b''
+        return b''.join(d for _, d in self._buffer)
+
+    def clear(self):
+        self._buffer.clear()
+
+# グローバルシンクインスタンス
+rolling_sink = None
+
+def start_rolling_buffer(vc):
+    """ローリングバッファ録音を開始する"""
+    global rolling_sink, voice_buffer_active, voice_last_audio_time
+    if not isinstance(vc, voice_recv.VoiceRecvClient):
+        return
+    # 既にリスニング中なら停止してから再開
+    try:
+        if vc.is_listening():
+            vc.stop_listening()
+    except:
+        pass
+    rolling_sink = RollingBufferSink(VOICE_BUFFER_SECONDS)
+    vc.listen(rolling_sink)
+    voice_buffer_active = True
+    voice_last_audio_time = time.time()
+    print("🎙️ ローリングバッファ録音開始")
+
+def stop_rolling_buffer(vc):
+    """ローリングバッファ録音を停止する"""
+    global rolling_sink, voice_buffer_active
+    try:
+        if vc and isinstance(vc, voice_recv.VoiceRecvClient) and vc.is_listening():
+            vc.stop_listening()
+    except:
+        pass
+    if rolling_sink:
+        rolling_sink.clear()
+    rolling_sink = None
+    voice_buffer_active = False
+    print("🎙️ ローリングバッファ録音停止")
+
+# ==========================================
 # TASKS
 # ==========================================
+@tasks.loop(seconds=5)
+async def voice_chat_monitor_task():
+    """会話検知・自動相槌のバックグラウンドタスク"""
+    global voice_chat_mode, voice_rolling_buffer, voice_last_triggered
+    global voice_last_audio_time, voice_buffer_active, rolling_sink
+
+    if not voice_chat_mode:
+        return
+
+    if current_active_channel_id is None:
+        return
+
+    channel = bot.get_channel(current_active_channel_id)
+    if not channel:
+        return
+
+    vc = channel.guild.voice_client
+    if not vc or not vc.is_connected():
+        return
+
+    # VCに2人以上いるか確認（BOT含む）
+    if len(vc.channel.members) < 2:
+        if voice_buffer_active:
+            stop_rolling_buffer(vc)
+        return
+
+    # 音楽再生中はスキップ
+    if is_playing_music:
+        return
+
+    now = time.time()
+
+    # === クールダウン処理 ===
+    if voice_last_triggered is not None:
+        elapsed_minutes = (now - voice_last_triggered) / 60.0
+
+        if elapsed_minutes < VOICE_BUFFER_RESTART_MINUTES:
+            # 0〜19分: バッファ停止
+            if voice_buffer_active:
+                stop_rolling_buffer(vc)
+            return
+        elif elapsed_minutes < VOICE_COOLDOWN_MINUTES:
+            # 19〜20分: バッファ再開（クールダウン明けに備える）
+            if not voice_buffer_active:
+                start_rolling_buffer(vc)
+            return
+        # 20分以上: クールダウン終了、通常処理へ
+
+    # === バッファ録音が未開始なら開始 ===
+    if not voice_buffer_active:
+        start_rolling_buffer(vc)
+        return
+
+    # === 無音検知 ===
+    if voice_last_audio_time is None:
+        return
+
+    silent_seconds = now - voice_last_audio_time
+    if silent_seconds < VOICE_SILENT_SECONDS:
+        return
+
+    # === 30秒以上無音 → 相槌処理 ===
+    print(f"🔇 {silent_seconds:.0f}秒間の無音を検知。相槌処理を開始...")
+
+    # バッファからPCMデータを取得
+    if rolling_sink is None or not rolling_sink._buffer:
+        print("⚠️ バッファが空のため相槌をスキップ")
+        voice_last_audio_time = now  # リセットして再検知
+        return
+
+    pcm_data = rolling_sink.get_audio_bytes()
+
+    # バッファ停止 & クールダウン開始
+    stop_rolling_buffer(vc)
+    voice_last_triggered = now
+    voice_last_audio_time = None
+
+    if len(pcm_data) < 1000:
+        print("⚠️ 音声データが少なすぎるためフォールバック")
+        await _voice_chat_fallback(channel)
+        return
+
+    # PCMデータをWAV形式に変換
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, 'wb') as wf:
+        wf.setnchannels(2)       # ステレオ
+        wf.setsampwidth(2)       # 16bit
+        wf.setframerate(48000)   # 48kHz (Discordの標準)
+        wf.writeframes(pcm_data)
+    wav_bytes = wav_buffer.getvalue()
+
+    # === Gemini STTで文字起こし ===
+    try:
+        audio_part = types.Part.from_bytes(
+            data=wav_bytes,
+            mime_type="audio/wav"
+        )
+        stt_response = await client.aio.models.generate_content(
+            model=MODEL_NAME,
+            contents=["この音声を文字起こしせよ。", audio_part],
+            config=config_stt
+        )
+        log_token_usage(stt_response, "VoiceChatSTT")
+        transcribed_text = stt_response.text.strip()
+    except Exception as e:
+        print(f"⚠️ 会話検知STTエラー: {e}")
+        await _voice_chat_fallback(channel)
+        return
+
+    # 文字起こし結果がない場合はフォールバック
+    if not transcribed_text or "聞き取れなかった" in transcribed_text:
+        print("🔇 文字起こし結果なし → フォールバック独り言")
+        await _voice_chat_fallback(channel)
+        return
+
+    # === 相槌生成 ===
+    try:
+        prompt = (
+            "以下はボイスチャットの会話内容じゃ。\n"
+            "この会話に対して、もち神さまとして自然な相槌を1文・40文字以内で返すのじゃ。\n"
+            "質問や提案、次のステップの提示は一切行わず、相槌のみで完結させること。\n"
+            "Google検索を使用して、会話に関連する最新のニュースやゲームのパッチ情報を確認した上で回答せよ。\n"
+            "会話の中のキーワードを1つ含めること。\n\n"
+            f"会話内容：\n{transcribed_text}"
+        )
+
+        # 相槌用config（tool_search付き）
+        config_aizuchi = types.GenerateContentConfig(
+            tools=tool_search,
+            system_instruction="""
+            あなたは「もち神さま」というFF14に精通した「幼き賢神」です。
+            ・回答は必ず「1文のみ（40文字以内）」で行うこと。
+            ・一人称「わし」、語尾は「～なのじゃ」「～のう」「～じゃぞ」。
+            ・相槌のみで完結させること。質問や提案は一切行わない。
+            """,
+            max_output_tokens=150,
+            temperature=0.7
+        )
+
+        ai_response = await client.aio.models.generate_content(
+            model=MODEL_NAME, contents=prompt, config=config_aizuchi
+        )
+        log_token_usage(ai_response, "VoiceChatAizuchi")
+        aizuchi_text = ai_response.text.strip()
+    except Exception as e:
+        print(f"⚠️ 相槌生成エラー: {e}")
+        await _voice_chat_fallback(channel)
+        return
+
+    # === テキスト投稿 + VOICEVOX読み上げ ===
+    try:
+        await channel.send(f"💬 {aizuchi_text}")
+        if not is_playing_music:
+            fn = await generate_wav(aizuchi_text, SPEAKER_ID)
+            if fn:
+                play_audio(channel.guild, fn)
+    except Exception as e:
+        print(f"⚠️ 相槌送信エラー: {e}")
+
+
+async def _voice_chat_fallback(channel):
+    """文字起こし失敗時のフォールバック: FF14ネタのランダム独り言"""
+    global is_playing_music
+    try:
+        response = await client.aio.models.generate_content(
+            model=MODEL_NAME, contents="FF14の短い独り言（20文字以内）を。", config=config_monologue
+        )
+        log_token_usage(response, "VoiceChatFallback")
+        text = response.text.strip()
+        await channel.send(text)
+        if not is_playing_music:
+            fn = await generate_wav(text, SPEAKER_ID)
+            if fn:
+                play_audio(channel.guild, fn)
+    except Exception as e:
+        print(f"⚠️ フォールバック独り言エラー: {e}")
+
+
 @tasks.loop(minutes=60)
 async def random_monologue_task():
     global current_active_channel_id, is_playing_music
@@ -269,7 +541,7 @@ async def random_monologue_task():
 
     try:
         response = await client.aio.models.generate_content(
-            model=MODEL_NAME, contents="FF14の短い独り言（20文字以内）を。", config=config_normal
+            model=MODEL_NAME, contents="FF14の短い独り言（20文字以内）を。", config=config_monologue
         )
         log_token_usage(response, "Monologue")
         text = response.text.strip()
@@ -293,7 +565,7 @@ async def gohan_police_task():
     try:
         prompt = "FF14の高難易度レイドで『食事バフ』を忘れているプレイヤーに対し、VIT不足による即死やDPS低下を指摘する『強烈な皮肉』を20文字以内で。「ごはん警察」は禁止。"
         response = await client.aio.models.generate_content(
-            model=MODEL_NAME, contents=prompt, config=config_normal
+            model=MODEL_NAME, contents=prompt, config=config_monologue
         )
         log_token_usage(response, "GohanPolice")
         
@@ -565,6 +837,47 @@ async def desert_album(interaction: discord.Interaction):
 
 
 # ==========================================
+# SLASH COMMANDS (会話検知)
+# ==========================================
+
+@bot.tree.command(name="会話オン", description="会話検知モードをオンにするのじゃ")
+async def voice_chat_on(interaction: discord.Interaction):
+    global voice_chat_mode, voice_last_audio_time
+    vc = interaction.guild.voice_client
+    if vc is None or not vc.is_connected():
+        await interaction.response.send_message("先に `!mjoin` でわしを呼ぶのじゃ。", ephemeral=True)
+        return
+    voice_chat_mode = True
+    # バッファ録音を開始
+    start_rolling_buffer(vc)
+    await interaction.response.send_message(
+        "👂 会話を聞き始めるのじゃ。\n"
+        "※会話が30秒途切れると、もち神さまが相槌を打つのじゃ。"
+    )
+    # モニタータスクを開始
+    if not voice_chat_monitor_task.is_running():
+        voice_chat_monitor_task.start()
+
+
+@bot.tree.command(name="会話オフ", description="会話検知モードをオフにするのじゃ")
+async def voice_chat_off(interaction: discord.Interaction):
+    global voice_chat_mode, voice_rolling_buffer, voice_last_triggered
+    global voice_last_audio_time, voice_buffer_active
+    vc = interaction.guild.voice_client
+    voice_chat_mode = False
+    voice_rolling_buffer = []
+    voice_last_triggered = None
+    voice_last_audio_time = None
+    # バッファ録音を停止
+    if vc:
+        stop_rolling_buffer(vc)
+    # モニタータスクを停止
+    if voice_chat_monitor_task.is_running():
+        voice_chat_monitor_task.cancel()
+    await interaction.response.send_message("🔇 会話検知を止めるのじゃ。")
+
+
+# ==========================================
 # SLASH COMMANDS (もちもち)
 # ==========================================
 
@@ -610,6 +923,11 @@ async def slash_mochimochi_listen(interaction: discord.Interaction):
 
     # 3秒以内にdeferで応答
     await interaction.response.defer()
+
+    # 会話検知バッファとの競合を防ぐため一時停止
+    was_buffer_active = voice_buffer_active
+    if was_buffer_active and vc:
+        stop_rolling_buffer(vc)
 
     listening_sessions[guild_id] = True
     listen_cooldowns[guild_id] = now
@@ -710,6 +1028,11 @@ async def slash_mochimochi_listen(interaction: discord.Interaction):
                 os.remove(wav_filename)
         except: pass
         listening_sessions[guild_id] = False
+        # 会話検知バッファを復帰
+        if was_buffer_active and voice_chat_mode:
+            vc = interaction.guild.voice_client
+            if vc and vc.is_connected():
+                start_rolling_buffer(vc)
 
 
 # ==========================================
@@ -779,13 +1102,18 @@ async def stop(ctx):
 
 @bot.command()
 async def mjoin(ctx):
-    global current_active_channel_id, MUSIC_VOLUME
+    global current_active_channel_id, MUSIC_VOLUME, voice_chat_mode, voice_rolling_buffer, voice_last_triggered
     if ctx.author.voice:
         await ctx.author.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
         current_active_channel_id = ctx.channel.id
         
         # ★追加: 接続時に音量を必ず20%にリセット
         MUSIC_VOLUME = 0.2
+        
+        # 会話モード初期化
+        voice_chat_mode = False
+        voice_rolling_buffer = []
+        voice_last_triggered = None
         
         if gohan_police_task.is_running():
             gohan_police_task.cancel()
@@ -794,7 +1122,7 @@ async def mjoin(ctx):
         async with ctx.typing():
             try:
                 response = await client.aio.models.generate_content(
-                    model=MODEL_NAME, contents="参加時の短い挨拶（一言、20文字以内）を1つだけ生成せよ。", config=config_normal
+                    model=MODEL_NAME, contents="参加時の短い挨拶（一言、20文字以内）を1つだけ生成せよ。", config=config_monologue
                 )
                 log_token_usage(response, "Join")
                 greet = response.text.strip()
@@ -806,13 +1134,15 @@ async def mjoin(ctx):
             f"もちもち、ソーチョー\n"
             f"/dice [最大値]\n"
             f"/ダイス結果\n"
-            f"!play [URLまたはキーワード]\n"
-            f"!stop\n"
-            f"!vol [音量0-80]\n"
+            f"/play [URLまたはキーワード]\n"
+            f"/stop\n"
+            f"/vol [音量0-80]\n"
             f"/もちもち (声で質問)\n"
             f"/もちボイス (もち神さまの声を変更)\n"
             f"/マイボイス (自分の読み上げ声を変更)\n"
             f"/デザートアルバム\n"
+            f"/会話オン (会話が途切れたらもち神さまが相槌を打つ)\n"
+            f"/会話オフ\n"
             f"もちもちさよなら"
         )
         
@@ -869,6 +1199,9 @@ async def delayed_disconnect(voice_client):
             is_playing_music = False
             if gohan_police_task.is_running():
                 gohan_police_task.cancel()
+            # 会話モード停止
+            if voice_chat_monitor_task.is_running():
+                voice_chat_monitor_task.cancel()
     except asyncio.CancelledError:
         pass
 
@@ -877,7 +1210,7 @@ async def delayed_disconnect(voice_client):
 # ==========================================
 @bot.event
 async def on_message(message):
-    global current_active_channel_id, is_playing_music
+    global current_active_channel_id, is_playing_music, voice_chat_mode, voice_rolling_buffer, voice_last_triggered, voice_last_audio_time
     
     # Bot自身の発言は最初に無視
     if message.author.bot: return
@@ -887,6 +1220,15 @@ async def on_message(message):
     if message.content == TRIGGER_LEAVE:
         if message.guild.voice_client:
             await message.channel.send("さらばじゃ。")
+            # 会話モード停止
+            if voice_chat_mode:
+                stop_rolling_buffer(message.guild.voice_client)
+                voice_chat_mode = False
+                voice_rolling_buffer = []
+                voice_last_triggered = None
+                voice_last_audio_time = None
+                if voice_chat_monitor_task.is_running():
+                    voice_chat_monitor_task.cancel()
             await message.guild.voice_client.disconnect()
             current_active_channel_id = None
             is_playing_music = False

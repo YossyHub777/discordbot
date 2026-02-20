@@ -1,1 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 環境設定（トークンなどの秘密情報）
 .env
+venv/
+.venv/
