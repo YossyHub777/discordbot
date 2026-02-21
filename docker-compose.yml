@@ -9,6 +9,7 @@ services:
       - 1.1.1.1
     environment:
       - TZ=Asia/Tokyo
+      - PYTHONUNBUFFERED=1
       - VOICEVOX_URL=http://127.0.0.1:50021
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
