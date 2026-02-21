@@ -100,6 +100,9 @@ ytdl = yt_dlp.YoutubeDL(yt_dl_opts)
 # ==========================================
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# Google検索ツール（各configで共有）
+tool_search = [types.Tool(google_search=types.GoogleSearch())]
+
 # ① 通常会話用
 config_normal = types.GenerateContentConfig(
     tools=tool_search,
@@ -126,7 +129,6 @@ config_monologue = types.GenerateContentConfig(
 )
 
 # ② 検索用
-tool_search = [types.Tool(google_search=types.GoogleSearch())]
 config_search = types.GenerateContentConfig(
     tools=tool_search,
     system_instruction="""
@@ -285,6 +287,7 @@ class RollingBufferSink(voice_recv.AudioSink):
         super().__init__()
         self.buffer_seconds = buffer_seconds
         self._buffer = []  # [(timestamp, pcm_bytes), ...]
+        self._write_count = 0
 
     def wants_opus(self):
         return False
@@ -293,14 +296,18 @@ class RollingBufferSink(voice_recv.AudioSink):
         global voice_last_audio_time
         now = time.time()
         voice_last_audio_time = now
-        # PCMデータをタイムスタンプ付きで保存
-        self._buffer.append((now, data.pcm))
+        self._write_count += 1
+        # PCMデータをコピーして保存（バッファ再利用対策）
+        pcm_copy = bytes(data.pcm) if data.pcm else b''
+        self._buffer.append((now, pcm_copy))
         # 古いデータを削除
         cutoff = now - self.buffer_seconds
         self._buffer = [(t, d) for t, d in self._buffer if t >= cutoff]
 
     def cleanup(self):
-        self._buffer.clear()
+        # ライブラリが内部的に呼ぶため、バッファはクリアしない
+        # （BOTの音声再生時にreader._stopから呼ばれる）
+        pass
 
     def get_audio_bytes(self):
         """バッファ内の全PCMデータを結合してbytesとして返す"""
@@ -309,7 +316,9 @@ class RollingBufferSink(voice_recv.AudioSink):
         return b''.join(d for _, d in self._buffer)
 
     def clear(self):
+        """明示的にバッファをクリアする（stop_rolling_bufferから呼ぶ用）"""
         self._buffer.clear()
+        self._write_count = 0
 
 # グローバルシンクインスタンス
 rolling_sink = None
@@ -318,17 +327,27 @@ def start_rolling_buffer(vc):
     """ローリングバッファ録音を開始する"""
     global rolling_sink, voice_buffer_active, voice_last_audio_time
     if not isinstance(vc, voice_recv.VoiceRecvClient):
+        print(f"⚠️ VCがVoiceRecvClientではない: {type(vc)}")
         return
-    # 既にリスニング中なら停止してから再開
+    # 既にリスニング中なら何もしない
     try:
         if vc.is_listening():
-            vc.stop_listening()
-    except:
-        pass
-    rolling_sink = RollingBufferSink(VOICE_BUFFER_SECONDS)
-    vc.listen(rolling_sink)
+            voice_buffer_active = True
+            return
+    except Exception as e:
+        print(f"⚠️ is_listening()エラー: {e}")
+    # 既存のシンクがあれば再利用（バッファを維持）
+    if rolling_sink is None:
+        rolling_sink = RollingBufferSink(VOICE_BUFFER_SECONDS)
+        print("🎙️ 新規シンク作成")
+    try:
+        vc.listen(rolling_sink)
+    except Exception as e:
+        print(f"❌ vc.listen()失敗: {e}")
+        return
     voice_buffer_active = True
-    voice_last_audio_time = time.time()
+    if voice_last_audio_time is None:
+        voice_last_audio_time = time.time()
     print("🎙️ ローリングバッファ録音開始")
 
 def stop_rolling_buffer(vc):
@@ -400,6 +419,13 @@ async def voice_chat_monitor_task():
     if not voice_buffer_active:
         start_rolling_buffer(vc)
         return
+
+    # === リスニングが停止していたら再開（BOT音声再生後に自動復帰） ===
+    try:
+        if not vc.is_listening():
+            start_rolling_buffer(vc)
+    except:
+        pass
 
     # === 無音検知 ===
     if voice_last_audio_time is None:
