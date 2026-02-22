@@ -16,13 +16,24 @@ import yt_dlp
 import json
 import os
 
+def update_source_volume(source, volume_level):
+    """source（またはそのラップ元）からPCMVolumeTransformerを探して音量を変更する"""
+    if hasattr(source, "volume"):
+        source.volume = volume_level
+    elif hasattr(source, "original"):
+        update_source_volume(source.original, volume_level)
+
 def load_menu_links() -> list[dict]:
     """menu_links.json からリンクメニュー項目を読み込む"""
     path = os.path.join(os.path.dirname(__file__), "menu_links.json")
     if not os.path.exists(path):
         return []
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"⚠️ menu_links.json の読み込みエラー: {e}")
+        return []
 
 # ==========================================
 # SETTINGS
@@ -1016,8 +1027,64 @@ async def voice_chat_off(interaction: discord.Interaction):
 # SLASH COMMANDS (UI Dashboard / menu)
 # ==========================================
 
+class MusicSelectView(discord.ui.View):
+    def __init__(self, entries: list[dict], interaction_user_id: int):
+        super().__init__(timeout=60)
+        self.add_item(MusicSelectMenu(entries, interaction_user_id))
+
+class MusicSelectMenu(discord.ui.Select):
+    def __init__(self, entries: list[dict], interaction_user_id: int):
+        self.entries = entries
+        self.interaction_user_id = interaction_user_id
+        options = [
+            discord.SelectOption(
+                label=entry["title"][:100],
+                value=str(i),
+                description=entry.get("duration_string", "")
+            )
+            for i, entry in enumerate(entries)
+        ]
+        super().__init__(placeholder="再生する曲を選ぶのじゃ", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.interaction_user_id:
+            await interaction.response.send_message("これは他の人の選択じゃ。", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        state = get_guild_state(guild.id)
+        vc = guild.voice_client
+
+        if vc is None:
+            await interaction.response.send_message("ボイスチャンネルに入るのじゃ。", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=False)
+
+        entry = self.entries[int(self.values[0])]
+        url = entry["url"]
+        title = entry.get("title", "不明な曲")
+
+        try:
+            if vc.is_playing():
+                vc.stop()
+
+            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(url, **ffmpeg_opts), volume=MUSIC_VOLUME)
+
+            def after_playing(error):
+                state["is_playing_music"] = False
+
+            vc.play(source, after=after_playing)
+            state["is_playing_music"] = True
+            await interaction.followup.send(f"🎵 **再生中**: {title} (音量: {int(MUSIC_VOLUME*100)}%)")
+        except Exception as e:
+            print(f"Play Error: {e}")
+            await interaction.followup.send("見つからなんだ、または再生できぬ。")
+            state["is_playing_music"] = False
+
+
 class MusicPlayModal(discord.ui.Modal, title="音楽を再生する"):
-    query = discord.ui.TextInput(
+    url = discord.ui.TextInput(
         label="URL または 検索キーワード",
         style=discord.TextStyle.short,
         placeholder="例: https://youtube.com/... または FF14 BGM",
@@ -1025,52 +1092,66 @@ class MusicPlayModal(discord.ui.Modal, title="音楽を再生する"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        query = self.query.value
+        query = self.url.value.strip()
+        is_url = query.startswith("http")
+        
+        # すぐにdeferしてDiscordの3秒タイムアウトを防ぐ
+        await interaction.response.defer(ephemeral=not is_url)
+
         guild = interaction.guild
         state = get_guild_state(guild.id)
-        
         vc = guild.voice_client
+
         if vc is None:
             if interaction.user.voice:
-                vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
-                state["active_channel_id"] = interaction.channel.id
+                try:
+                    vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+                    state["active_channel_id"] = interaction.channel.id
+                except Exception as e:
+                    print(f"Voice Connect Error: {e}")
+                    await interaction.followup.send("ボイスチャンネルに接続できなかったのじゃ。", ephemeral=True)
+                    return
             else:
                 await interaction.followup.send("ボイスチャンネルに入るのじゃ。", ephemeral=True)
                 return
-                
-        msg = await interaction.followup.send(f"「{query}」のレコードを探しておる...", ephemeral=True)
 
-        if query.startswith("http"):
-            search_query = query
-        else:
-            search_query = f"ytsearch:{query} bgm"
+        # URLの場合はそのまま再生
+        if is_url:
+            msg = await interaction.followup.send(f"「{query}」のレコードを探しておる...")
+            try:
+                loop = asyncio.get_running_loop()
+                data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
+                if 'entries' in data:
+                    data = data['entries'][0]
+                url = data['url']
+                title = data.get('title', '不明な曲')
+                if vc.is_playing(): vc.stop()
+                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(url, **ffmpeg_opts), volume=MUSIC_VOLUME)
+                def after_playing(error):
+                    state["is_playing_music"] = False
+                vc.play(source, after=after_playing)
+                state["is_playing_music"] = True
+                await msg.edit(content=f"🎵 **再生中**: {title} (音量: {int(MUSIC_VOLUME*100)}%)")
+            except Exception as e:
+                print(f"Play Error: {e}")
+                await msg.edit(content="見つからなんだ、または再生できぬ。")
+                state["is_playing_music"] = False
+            return
 
+        # キーワードの場合は5件取得してセレクトメニューを表示
+        search_query = f"ytsearch5:{query} bgm"
         try:
             loop = asyncio.get_running_loop()
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_query, download=False))
-            
-            if 'entries' in data:
-                data = data['entries'][0]
-            
-            url = data['url']
-            title = data.get('title', '不明な曲')
-            
-            if vc.is_playing(): vc.stop()
-            
-            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(url, **ffmpeg_opts), volume=MUSIC_VOLUME)
-            
-            def after_playing(error):
-                state["is_playing_music"] = False
-                
-            vc.play(source, after=after_playing)
-            state["is_playing_music"] = True
-            
-            await msg.edit(content=f"🎵 **再生中**: {title} (音量: {int(MUSIC_VOLUME*100)}%)")
+            entries = data.get("entries", [])
+            if not entries:
+                await interaction.followup.send("見つからなんだ。", ephemeral=True)
+                return
+            view = MusicSelectView(entries, interaction.user.id)
+            await interaction.followup.send("🎵 再生する曲を選ぶのじゃ：", view=view, ephemeral=True)
         except Exception as e:
-            print(f"Play Error: {e}")
-            await msg.edit(content="見つからなんだ、または再生できぬ。")
-            state["is_playing_music"] = False
+            print(f"Search Error: {e}")
+            await interaction.followup.send("検索に失敗したのう。", ephemeral=True)
 
 class VolumeModal(discord.ui.Modal, title="音量変更"):
     volume = discord.ui.TextInput(
@@ -1096,8 +1177,52 @@ class VolumeModal(discord.ui.Modal, title="音量変更"):
         state = get_guild_state(interaction.guild_id)
         vc = interaction.guild.voice_client if interaction.guild else None
         if vc and vc.source and state["is_playing_music"]:
-            vc.source.volume = MUSIC_VOLUME
-        await interaction.response.send_message(f"🔊 音量を **{vol_val}%** に変更したぞ。", ephemeral=True)
+            update_source_volume(vc.source, MUSIC_VOLUME)
+            
+        await interaction.response.send_message("操作を受け付けたぞ。", ephemeral=True)
+        await interaction.channel.send(f"🔊 音量を **{vol_val}%** に変更したぞ。")
+
+class MochimochiModal(discord.ui.Modal, title="もちもちに話しかける"):
+    question = discord.ui.TextInput(
+        label="キーワード・質問",
+        placeholder="例：今日のおすすめのジョブは？",
+        max_length=50
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user_question = self.question.value.strip()
+        if not user_question:
+            await interaction.response.send_message("何も入力されておらぬ。", ephemeral=True)
+            return
+
+        state = get_guild_state(interaction.guild_id)
+        channel = interaction.channel
+        
+        await interaction.response.send_message("もち神さまが考えておるぞ...", ephemeral=True)
+
+        async with channel.typing():
+            try:
+                use_search = any(k in user_question for k in SEARCH_KEYWORDS) or "教えて" in user_question
+                target_config = config_search if use_search else config_normal
+                history = [f"{msg.author.display_name}: {msg.content}" async for msg in channel.history(limit=15)]
+                full_prompt = f"履歴：\n" + "\n".join(reversed(history)) + f"\n\n質問：{user_question}"
+                response = await client.aio.models.generate_content(
+                    model=MODEL_NAME, contents=full_prompt, config=target_config
+                )
+                log_token_usage(response, "Chat(Modal)")
+                ai_text = response.text
+                
+                # 自分以外のみんなに見えるように、channel.send()を使用する
+                await channel.send(f"💬 **{interaction.user.display_name}**：{user_question}\n\n{ai_text}")
+                
+                if not use_search and not state["is_playing_music"]:
+                    audio_data = await generate_wav(ai_text, SPEAKER_ID)
+                    if audio_data: play_audio(interaction.guild, audio_data)
+                    
+                await interaction.edit_original_response(content="✅ 送信したのじゃ。")
+            except Exception as e:
+                print(f"Error: {e}")
+                await interaction.edit_original_response(content="❌ 天界の網が乱れておるのう。")
 
 class MainMenuSelect(discord.ui.Select):
     def __init__(self):
@@ -1108,22 +1233,25 @@ class MainMenuSelect(discord.ui.Select):
             discord.SelectOption(label="マイボイスの変更", value="myvoice", emoji="🎤"),
             discord.SelectOption(label="もち神さまの声変更", value="botvoice", emoji="🗣️"),
             discord.SelectOption(label="会話検知 (オン/オフ)", value="voice_chat", emoji="💬"),
+            discord.SelectOption(label="もちもちに話しかける", value="mochimochi_chat", emoji="🤖"),
             discord.SelectOption(label="ソーチョーの幻想盤", value="fauxhollows", emoji="🦊"),
-            discord.SelectOption(label="もち神さまとお別れする", value="disconnect", emoji="👋")
         ]
 
         # menu_links.json から動的にリンク項目を追加
-        existing_values = {o.value for o in options}
+        existing_values = {o.value for o in options} | {"disconnect"}
         for item in load_menu_links():
             if item["value"] in existing_values:
                 continue  # value重複はスキップ
-            if len(options) >= 25:
+            if len(options) >= 24:
                 break  # Discordのセレクトメニュー上限
             options.append(discord.SelectOption(
                 label=item["label"],
                 value=item["value"],
                 emoji=item.get("emoji", "🔗")
             ))
+
+        # disconnect を常に最後に追加
+        options.append(discord.SelectOption(label="もち神さまとお別れする", value="disconnect", emoji="👋"))
 
         super().__init__(placeholder="メニューを選ぶのじゃ", min_values=1, max_values=1, options=options)
 
@@ -1141,7 +1269,8 @@ class MainMenuSelect(discord.ui.Select):
             if vc and vc.is_playing():
                 vc.stop()
                 state["is_playing_music"] = False
-                await interaction.response.send_message("止めたぞ。", ephemeral=True)
+                await interaction.response.send_message("操作を受け付けたぞ。", ephemeral=True)
+                await interaction.channel.send("🛑 音楽を止めたぞ。")
             else:
                 await interaction.response.send_message("何も流れておらぬ。", ephemeral=True)
         elif val == "myvoice":
@@ -1169,14 +1298,16 @@ class MainMenuSelect(discord.ui.Select):
                 await interaction.response.send_message("👂 会話検知をオンにしたぞ。", ephemeral=True)
                 if not voice_chat_monitor_task.is_running():
                     voice_chat_monitor_task.start()
+        elif val == "mochimochi_chat":
+            await interaction.response.send_modal(MochimochiModal())
         elif val == "fauxhollows":
             await interaction.response.send_message(
-                "🦊 **ソーチョーの幻想盤**\nhttps://knt-a.com/fauxhollows/", 
-                ephemeral=True
+                "🦊 **ソーチョーの幻想盤**\nhttps://knt-a.com/fauxhollows/"
             )
         elif val == "disconnect":
             if vc:
-                await interaction.response.send_message("さらばじゃ。", ephemeral=True)
+                await interaction.response.send_message("操作を受け付けたぞ。", ephemeral=True)
+                await interaction.channel.send("👋 さらばじゃ。")
                 if state["voice_chat_mode"]:
                     stop_rolling_buffer(vc)
                 
@@ -1200,8 +1331,7 @@ class MainMenuSelect(discord.ui.Select):
                 if val == item["value"]:
                     emoji = item.get("emoji", "🔗")
                     await interaction.response.send_message(
-                        f"{emoji} **{item['label']}**\n{item['url']}",
-                        ephemeral=True
+                        f"{emoji} **{item['label']}**\n{item['url']}"
                     )
                     return
             await interaction.response.send_message("不明な操作じゃ。", ephemeral=True)
@@ -1393,7 +1523,7 @@ async def vol(ctx, volume: int):
     MUSIC_VOLUME = volume / 100.0
     state = get_guild_state(ctx.guild.id)
     if ctx.voice_client and ctx.voice_client.source and state["is_playing_music"]:
-        ctx.voice_client.source.volume = MUSIC_VOLUME
+        update_source_volume(ctx.voice_client.source, MUSIC_VOLUME)
     await ctx.send(f"🔊 音楽の音量を **{volume}%** に変更したぞ。")
 
 @bot.command()
@@ -1478,20 +1608,9 @@ async def mjoin(ctx):
         
         info_msg = (
             "\n\n"
-            f"もちもち、[キーワード] (Gemini)\n"
-            f"もちもち、ソーチョー\n"
+            f"/menu メニュー表示\n"
             f"/dice [最大値]\n"
-            f"/ダイス結果\n"
-            f"/play [URLまたはキーワード]\n"
-            f"/stop\n"
-            f"/vol [音量0-80]\n"
-            f"/もちもち (声で質問)\n"
-            f"/もちボイス (もち神さまの声を変更)\n"
-            f"/マイボイス (自分の読み上げ声を変更)\n"
-            f"/デザートアルバム\n"
-            f"/会話オン (会話が途切れたらもち神さまが相槌を打つ)\n"
-            f"/会話オフ\n"
-            f"もちもちさよなら"
+            f"/ダイス結果"
         )
         
         await ctx.send(greet + info_msg)
@@ -1513,6 +1632,26 @@ async def pause(ctx):
 # ==========================================
 @bot.event
 async def on_voice_state_update(member, before, after):
+    # BOT自身がVCから切断された場合のクリーンアップ
+    if member == member.guild.me and before.channel is not None and after.channel is None:
+        state = get_guild_state(member.guild.id)
+        vc = member.guild.voice_client
+        if state["voice_chat_mode"]:
+            if vc:
+                stop_rolling_buffer(vc)
+            else:
+                # vcがすでにNoneの場合は状態だけリセット
+                state["rolling_sink"] = None
+                state["voice_buffer_active"] = False
+        state["voice_chat_mode"] = False
+        state["voice_last_triggered"] = None
+        state["voice_last_audio_time"] = None
+        state["active_channel_id"] = None
+        state["is_playing_music"] = False
+        if voice_chat_monitor_task.is_running():
+            voice_chat_monitor_task.stop()
+        return
+
     if member.bot: return
     if member.guild.voice_client is None: return
     bot_vc = member.guild.voice_client
@@ -1625,10 +1764,10 @@ async def on_message(message):
     if message.content == TRIGGER_SUMMARY:
         async with message.channel.typing():
             try:
-                limit_time = discord.utils.utcnow() - timedelta(minutes=30)
+                limit_time = discord.utils.utcnow() - timedelta(minutes=10)
                 history_list = [f"{msg.author.display_name}: {msg.content}" async for msg in message.channel.history(limit=100, after=limit_time)]
                 if not history_list:
-                    await message.channel.send("直近30分間にダイスの記録はないのう。")
+                    await message.channel.send("直近10分間にダイスの記録はないのう。")
                     return
                 
                 history_newest_first = list(reversed(history_list))

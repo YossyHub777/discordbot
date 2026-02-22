@@ -8,8 +8,20 @@
     {
         "label": "7.4 零式装備",
         "value": "7.4_rei_equipment",
-        "emoji": "🦊",
+        "emoji": "🎤",
         "url": "https://fuucdayo.com/battle/7915/"
+    },
+    {
+        "label": "ヘビー級零式2層",
+        "value": "heavy_rei_2",
+        "emoji": "🎤",
+        "url": "https://game8.jp/ff14/755672"
+    },
+    {
+        "label": "ヘビー級零式3層",
+        "value": "heavy_rei_3",
+        "emoji": "🎤",
+        "url": "https://game8.jp/ff14/755154"
     },
     {
         "label": "Desert Album 2024",

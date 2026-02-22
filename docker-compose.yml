@@ -15,6 +15,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - ./mochigami.py:/app/mochigami.py # 開発用にローカルファイルをマウント
+      - ./menu_links.json:/app/menu_links.json # メニュー追加用のJSONマウント
       - ./data:/app/data # ボイス設定等の永続化フォルダ
 
   voicevox:
