@@ -959,6 +959,10 @@ async def desert_album(interaction: discord.Interaction):
     await interaction.response.send_message(msg)
 
 
+@bot.tree.command(name="ソーチョーの幻想盤", description="ソーチョーの幻想盤のURLを表示するのじゃ")
+async def fauxhollows(interaction: discord.Interaction):
+    await interaction.response.send_message("🦊 **ソーチョーの幻想盤**\nhttps://knt-a.com/fauxhollows/")
+
 # ==========================================
 # SLASH COMMANDS (会話検知)
 # ==========================================
@@ -1093,6 +1097,8 @@ class MainMenuSelect(discord.ui.Select):
             discord.SelectOption(label="マイボイスの変更", value="myvoice", emoji="🎤"),
             discord.SelectOption(label="もち神さまの声変更", value="botvoice", emoji="🗣️"),
             discord.SelectOption(label="会話検知 (オン/オフ)", value="voice_chat", emoji="💬"),
+            discord.SelectOption(label="ソーチョーの幻想盤", value="fauxhollows", emoji="🦊"),
+            discord.SelectOption(label="デザートアルバム", value="desert_album", emoji="🏜️"),
             discord.SelectOption(label="もち神さまとお別れする", value="disconnect", emoji="👋")
         ]
         super().__init__(placeholder="メニューを選ぶのじゃ", min_values=1, max_values=1, options=options)
@@ -1139,6 +1145,20 @@ class MainMenuSelect(discord.ui.Select):
                 await interaction.response.send_message("👂 会話検知をオンにしたぞ。", ephemeral=True)
                 if not voice_chat_monitor_task.is_running():
                     voice_chat_monitor_task.start()
+        elif val == "fauxhollows":
+            await interaction.response.send_message(
+                "🦊 **ソーチョーの幻想盤**\nhttps://knt-a.com/fauxhollows/", 
+                ephemeral=True
+            )
+        elif val == "desert_album":
+            msg = (
+                "🎵 デザートのアルバムじゃ。聴くがよい。\n\n"
+                "🏜️ **DESERT MEMBER SONG 2024**\n"
+                "https://soundcloud.com/shouyu-mochi/sets/desert-theme-song/s-0y6FdI6ccI3?si=9a004c595feb46e7b67547a3ca0a1638&utm_source=clipboard&utm_medium=text&utm_campaign=social_sharing\n\n"
+                "🎤 **DESERT MEMBER SONG 2025**\n"
+                "https://soundcloud.com/shouyu-mochi/sets/desert-member-song-2025-test/s-klf6JFeRYpP?si=276edc9d114643028d7c334f07d9c1a7&utm_source=clipboard&utm_medium=text&utm_campaign=social_sharing"
+            )
+            await interaction.response.send_message(msg, ephemeral=True)
         elif val == "disconnect":
             if vc:
                 await interaction.response.send_message("さらばじゃ。", ephemeral=True)
