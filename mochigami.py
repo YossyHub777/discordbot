@@ -14,6 +14,15 @@ from google import genai
 from google.genai import types
 import yt_dlp
 import json
+import os
+
+def load_menu_links() -> list[dict]:
+    """menu_links.json からリンクメニュー項目を読み込む"""
+    path = os.path.join(os.path.dirname(__file__), "menu_links.json")
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
 
 # ==========================================
 # SETTINGS
@@ -30,8 +39,10 @@ speaker_map_reverse = {}   # {3: "ずんだもん / ノーマル", ...}
 user_voices = {}           # {"ユーザーID": {"speaker_id": 3, "name": "キャラ名"}}
 
 # JSON永続化ファイルパス
-USER_VOICES_FILE = "user_voices.json"
-BOT_CONFIG_FILE = "bot_config.json"
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+USER_VOICES_FILE = os.path.join(DATA_DIR, "user_voices.json")
+BOT_CONFIG_FILE = os.path.join(DATA_DIR, "bot_config.json")
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN', '')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
@@ -1098,9 +1109,22 @@ class MainMenuSelect(discord.ui.Select):
             discord.SelectOption(label="もち神さまの声変更", value="botvoice", emoji="🗣️"),
             discord.SelectOption(label="会話検知 (オン/オフ)", value="voice_chat", emoji="💬"),
             discord.SelectOption(label="ソーチョーの幻想盤", value="fauxhollows", emoji="🦊"),
-            discord.SelectOption(label="デザートアルバム", value="desert_album", emoji="🏜️"),
             discord.SelectOption(label="もち神さまとお別れする", value="disconnect", emoji="👋")
         ]
+
+        # menu_links.json から動的にリンク項目を追加
+        existing_values = {o.value for o in options}
+        for item in load_menu_links():
+            if item["value"] in existing_values:
+                continue  # value重複はスキップ
+            if len(options) >= 25:
+                break  # Discordのセレクトメニュー上限
+            options.append(discord.SelectOption(
+                label=item["label"],
+                value=item["value"],
+                emoji=item.get("emoji", "🔗")
+            ))
+
         super().__init__(placeholder="メニューを選ぶのじゃ", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
@@ -1150,15 +1174,6 @@ class MainMenuSelect(discord.ui.Select):
                 "🦊 **ソーチョーの幻想盤**\nhttps://knt-a.com/fauxhollows/", 
                 ephemeral=True
             )
-        elif val == "desert_album":
-            msg = (
-                "🎵 デザートのアルバムじゃ。聴くがよい。\n\n"
-                "🏜️ **DESERT MEMBER SONG 2024**\n"
-                "https://soundcloud.com/shouyu-mochi/sets/desert-theme-song/s-0y6FdI6ccI3?si=9a004c595feb46e7b67547a3ca0a1638&utm_source=clipboard&utm_medium=text&utm_campaign=social_sharing\n\n"
-                "🎤 **DESERT MEMBER SONG 2025**\n"
-                "https://soundcloud.com/shouyu-mochi/sets/desert-member-song-2025-test/s-klf6JFeRYpP?si=276edc9d114643028d7c334f07d9c1a7&utm_source=clipboard&utm_medium=text&utm_campaign=social_sharing"
-            )
-            await interaction.response.send_message(msg, ephemeral=True)
         elif val == "disconnect":
             if vc:
                 await interaction.response.send_message("さらばじゃ。", ephemeral=True)
@@ -1179,6 +1194,17 @@ class MainMenuSelect(discord.ui.Select):
                 await vc.disconnect()
             else:
                 await interaction.response.send_message("わしはまだおらんぞ。", ephemeral=True)
+        else:
+            # menu_links.json 由来のリンク項目を処理
+            for item in load_menu_links():
+                if val == item["value"]:
+                    emoji = item.get("emoji", "🔗")
+                    await interaction.response.send_message(
+                        f"{emoji} **{item['label']}**\n{item['url']}",
+                        ephemeral=True
+                    )
+                    return
+            await interaction.response.send_message("不明な操作じゃ。", ephemeral=True)
 
 class MainMenuView(discord.ui.View):
     def __init__(self):
