@@ -1330,9 +1330,22 @@ class MainMenuSelect(discord.ui.Select):
             for item in load_menu_links():
                 if val == item["value"]:
                     emoji = item.get("emoji", "🔗")
-                    await interaction.response.send_message(
-                        f"{emoji} **{item['label']}**\n{item['url']}"
-                    )
+                    if "links" in item and isinstance(item["links"], list):
+                        view = discord.ui.View()
+                        for link in item["links"]:
+                            view.add_item(discord.ui.Button(
+                                style=discord.ButtonStyle.link,
+                                label=link.get("title", "リンク"),
+                                url=link.get("url", "")
+                            ))
+                        await interaction.response.send_message(
+                            f"{emoji} **{item['label']}**",
+                            view=view
+                        )
+                    else:
+                        await interaction.response.send_message(
+                            f"{emoji} **{item['label']}**\n{item.get('url', '')}"
+                        )
                     return
             await interaction.response.send_message("不明な操作じゃ。", ephemeral=True)
 
