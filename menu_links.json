@@ -8,13 +8,13 @@
     {
         "label": "7.4 零式装備",
         "value": "7.4_rei_equipment",
-        "emoji": "🎤",
+        "emoji": "🛡️",
         "url": "https://fuucdayo.com/battle/7915/"
     },
     {
         "label": "ヘビー級零式",
         "value": "heavy_rei",
-        "emoji": "🎤",
+        "emoji": "⚔️",
         "links": [
             {
                 "title": "2層",
@@ -29,7 +29,7 @@
     {
         "label": "Desert Album",
         "value": "desert_album",
-        "emoji": "🏜️",
+        "emoji": "💿",
         "links": [
             {
                 "title": "2024",
