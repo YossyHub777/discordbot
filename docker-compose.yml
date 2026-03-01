@@ -3,14 +3,14 @@ services:
     build: .
     container_name: mochigami-bot
     restart: always
-    network_mode: "host" # 音声パケット受信のためhostモード必須
+    # network_mode: "host" # 音声パケット受信のためhostモード必須
     dns:
       - 8.8.8.8
       - 1.1.1.1
     environment:
       - TZ=Asia/Tokyo
       - PYTHONUNBUFFERED=1
-      - VOICEVOX_URL=http://127.0.0.1:50021
+      - VOICEVOX_URL=http://voicevox:50021
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:

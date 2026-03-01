@@ -64,6 +64,11 @@ MODEL_NAME = "gemini-2.5-flash-lite"
 # ギルド単位の状態管理
 guild_state = {}
 
+MAX_PLAYERS = 8  # ゲームの最大参加人数
+
+# ゲームセッション管理（チャンネルIDをキーに進行中のゲームを管理）
+game_sessions = {}
+
 def get_guild_state(guild_id: int):
     if guild_id not in guild_state:
         guild_state[guild_id] = {
@@ -1024,6 +1029,313 @@ async def voice_chat_off(interaction: discord.Interaction):
     await interaction.response.send_message("🔇 会話検知を止めるのじゃ。")
 
 # ==========================================
+# MINI GAMES
+# ==========================================
+
+class DiceBattleLobbyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="🎲 参加する", style=discord.ButtonStyle.success)
+    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel_id = interaction.channel_id
+        session = game_sessions.get(channel_id)
+        if session is None:
+            await interaction.response.send_message("セッションが見つからぬ。", ephemeral=True)
+            return
+        if interaction.user in session["players"]:
+            await interaction.response.send_message("すでに参加しておるぞ。", ephemeral=True)
+            return
+        if len(session["players"]) >= MAX_PLAYERS:
+            await interaction.response.send_message(f"参加者が上限（{MAX_PLAYERS}人）に達しておる。", ephemeral=True)
+            return
+        session["players"].append(interaction.user)
+        embed = build_dice_lobby_embed(session)
+        await interaction.response.edit_message(embed=embed)
+
+    @discord.ui.button(label="🔒 締め切る", style=discord.ButtonStyle.danger)
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel_id = interaction.channel_id
+        session = game_sessions.get(channel_id)
+        if session is None:
+            await interaction.response.send_message("セッションが見つからぬ。", ephemeral=True)
+            return
+        if interaction.user != session["host"]:
+            await interaction.response.send_message("主催者のみ締め切れるのじゃ。", ephemeral=True)
+            return
+        if len(session["players"]) < 2:
+            await interaction.response.send_message("参加者が2人以上必要じゃ。", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.defer()
+        await run_dice_battle(interaction, session)
+
+    @discord.ui.button(label="❌ キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel_id = interaction.channel_id
+        session = game_sessions.get(channel_id)
+        if session is None:
+            await interaction.response.send_message("セッションが見つからぬ。", ephemeral=True)
+            return
+        if interaction.user != session["host"]:
+            await interaction.response.send_message("主催者のみキャンセルできるのじゃ。", ephemeral=True)
+            return
+        game_sessions.pop(channel_id, None)
+        self.stop()
+        await interaction.response.edit_message(content="❌ ダイスバトルをキャンセルしたぞ。", embed=None, view=None)
+
+
+def build_dice_lobby_embed(session: dict) -> discord.Embed:
+    embed = discord.Embed(title="🎲 ダイスバトル　参加受付中！", color=discord.Color.blue())
+    players = session["players"]
+    if players:
+        player_list = "\n".join(f"🟢 {p.display_name}" for p in players)
+    else:
+        player_list = "まだいない"
+    embed.add_field(
+        name=f"参加者（{len(players)}人 / 最大{MAX_PLAYERS}人）",
+        value=player_list,
+        inline=False
+    )
+    embed.set_footer(text="主催者が「締め切る」を押すとゲームスタートじゃ")
+    return embed
+
+
+async def run_dice_battle(interaction: discord.Interaction, session: dict):
+    players = session["players"]
+    results = []
+    for player in players:
+        roll = random.randint(1, 100)
+        results.append((player, roll))
+    results.sort(key=lambda x: x[1], reverse=True)
+
+    # 同点対応の順位計算
+    ranked = []
+    current_rank = 1
+    for i, (player, roll) in enumerate(results):
+        if i > 0 and roll < results[i - 1][1]:
+            current_rank = i + 1
+        ranked.append((current_rank, player, roll))
+
+    embed = discord.Embed(title="🎲✨ ダイスバトル結果 ✨🎲", color=discord.Color.gold())
+    for rank, player, roll in ranked:
+        if rank == 1:
+            medal = "🥇"
+        elif rank == 2:
+            medal = "🥈"
+        elif rank == 3:
+            medal = "🥉"
+        else:
+            medal = f"{rank}位"
+        value = f"🎲 **{roll}**"
+        if rank == 1:
+            value += " 👑"
+        embed.add_field(name=f"{medal} {player.display_name}", value=value, inline=False)
+
+    winner = ranked[0][1]
+    embed.set_footer(text=f"参加者 {len(players)}名　｜　🏆 優勝：{winner.display_name}！おめでとうじゃ！🎉")
+
+    await interaction.followup.send(embed=embed)
+    game_sessions.pop(interaction.channel_id, None)
+
+
+class JankenLobbyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="✋ 参加する", style=discord.ButtonStyle.success)
+    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel_id = interaction.channel_id
+        session = game_sessions.get(channel_id)
+        if session is None:
+            await interaction.response.send_message("セッションが見つからぬ。", ephemeral=True)
+            return
+        if interaction.user in session["players"]:
+            await interaction.response.send_message("すでに参加しておるぞ。", ephemeral=True)
+            return
+        if len(session["players"]) >= MAX_PLAYERS:
+            await interaction.response.send_message(f"参加者が上限（{MAX_PLAYERS}人）に達しておる。", ephemeral=True)
+            return
+        session["players"].append(interaction.user)
+        embed = build_janken_lobby_embed(session)
+        await interaction.response.edit_message(embed=embed)
+
+    @discord.ui.button(label="🔒 締め切る", style=discord.ButtonStyle.danger)
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel_id = interaction.channel_id
+        session = game_sessions.get(channel_id)
+        if session is None:
+            await interaction.response.send_message("セッションが見つからぬ。", ephemeral=True)
+            return
+        if interaction.user != session["host"]:
+            await interaction.response.send_message("主催者のみ締め切れるのじゃ。", ephemeral=True)
+            return
+        if len(session["players"]) < 2:
+            await interaction.response.send_message("参加者が2人以上必要じゃ。", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.defer()
+        await start_janken_round(interaction, session, round_num=1)
+
+    @discord.ui.button(label="❌ キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel_id = interaction.channel_id
+        session = game_sessions.get(channel_id)
+        if session is None:
+            await interaction.response.send_message("セッションが見つからぬ。", ephemeral=True)
+            return
+        if interaction.user != session["host"]:
+            await interaction.response.send_message("主催者のみキャンセルできるのじゃ。", ephemeral=True)
+            return
+        game_sessions.pop(channel_id, None)
+        self.stop()
+        await interaction.response.edit_message(content="❌ じゃんけん大会をキャンセルしたぞ。", embed=None, view=None)
+
+
+def build_janken_lobby_embed(session: dict) -> discord.Embed:
+    embed = discord.Embed(title="✊ じゃんけん大会　参加受付中！", color=discord.Color.purple())
+    players = session["players"]
+    if players:
+        player_list = "\n".join(f"🟢 {p.display_name}" for p in players)
+    else:
+        player_list = "まだいない"
+    embed.add_field(
+        name=f"参加者（{len(players)}人 / 最大{MAX_PLAYERS}人）",
+        value=player_list,
+        inline=False
+    )
+    embed.set_footer(text="主催者が「締め切る」を押すとゲームスタートじゃ")
+    return embed
+
+
+class JankenHandView(discord.ui.View):
+    def __init__(self, session: dict, round_num: int):
+        super().__init__(timeout=60)
+        self.session = session
+        self.round_num = round_num
+
+    async def handle_choice(self, interaction: discord.Interaction, hand: str):
+        channel_id = interaction.channel_id
+        session = game_sessions.get(channel_id)
+        if session is None:
+            await interaction.response.send_message("セッションが見つからぬ。", ephemeral=True)
+            return
+        if interaction.user not in session["players"]:
+            await interaction.response.send_message("参加者のみ選択できるのじゃ。", ephemeral=True)
+            return
+        if interaction.user.id in session["choices"]:
+            await interaction.response.send_message("すでに選択済みじゃ。", ephemeral=True)
+            return
+        session["choices"][interaction.user.id] = hand
+        await interaction.response.send_message(f"✅ **{hand}** を選んだのじゃ！（他の人には見えないぞ）", ephemeral=True)
+        if len(session["choices"]) == len(session["players"]):
+            self.stop()
+            await show_janken_result(interaction, session, self.round_num)
+
+    @discord.ui.button(label="✊ グー", style=discord.ButtonStyle.secondary)
+    async def rock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_choice(interaction, "グー")
+
+    @discord.ui.button(label="✌️ チョキ", style=discord.ButtonStyle.secondary)
+    async def scissors_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_choice(interaction, "チョキ")
+
+    @discord.ui.button(label="🖐️ パー", style=discord.ButtonStyle.secondary)
+    async def paper_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_choice(interaction, "パー")
+
+
+async def start_janken_round(interaction: discord.Interaction, session: dict, round_num: int):
+    session["choices"] = {}
+    view = JankenHandView(session, round_num)
+    player_list = "\n".join(f"⏳ {p.display_name}" for p in session["players"])
+    embed = discord.Embed(
+        title=f"✊ 第{round_num}回戦　手を選んでください！",
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="参加者", value=player_list, inline=False)
+    embed.set_footer(text="ボタンを押して手を選ぶのじゃ（他の人には見えないぞ）")
+    await interaction.followup.send(embed=embed, view=view)
+
+
+def judge_janken(choices: dict) -> str:
+    hands = set(choices.values())
+    if len(hands) == 1 or len(hands) == 3:
+        return "あいこ"
+    if hands == {"グー", "チョキ"}:
+        return "グー"
+    if hands == {"チョキ", "パー"}:
+        return "チョキ"
+    if hands == {"パー", "グー"}:
+        return "パー"
+    return "あいこ"
+
+
+async def show_janken_result(interaction: discord.Interaction, session: dict, round_num: int):
+    hand_emoji = {"グー": "✊", "チョキ": "✌️", "パー": "🖐️"}
+    choices = session["choices"]
+    players = session["players"]
+    result = judge_janken(choices)
+
+    if result == "あいこ":
+        embed = discord.Embed(title="✊ じゃんけん結果", color=discord.Color.yellow())
+        lines = []
+        for p in players:
+            hand = choices[p.id]
+            emoji = hand_emoji[hand]
+            lines.append(f"{emoji} {p.display_name}　{hand}")
+        embed.add_field(name="🤝 あいこ！もう一度じゃ！", value="\n".join(lines), inline=False)
+        embed.set_footer(text=f"第{round_num}回戦　あいこ")
+        await interaction.followup.send(embed=embed)
+        await asyncio.sleep(2)
+        await start_janken_round(interaction, session, round_num + 1)
+    else:
+        winners = [p for p in players if choices[p.id] == result]
+        losers = [p for p in players if choices[p.id] != result]
+        embed = discord.Embed(title="✊ じゃんけん結果", color=discord.Color.green())
+        winner_lines = []
+        for p in winners:
+            hand = choices[p.id]
+            emoji = hand_emoji[hand]
+            winner_lines.append(f"{emoji} {p.display_name}　{hand}　👑")
+        embed.add_field(name=f"🏆 {result}の勝ち！", value="\n".join(winner_lines), inline=False)
+        loser_lines = []
+        for p in losers:
+            hand = choices[p.id]
+            emoji = hand_emoji[hand]
+            loser_lines.append(f"{emoji} {p.display_name}　{hand}")
+        embed.add_field(name="💨 敗者", value="\n".join(loser_lines), inline=False)
+        winner_names = "、".join(p.display_name for p in winners)
+        embed.set_footer(text=f"第{round_num}回戦終了　🏆 優勝：{winner_names}！")
+        await interaction.followup.send(embed=embed)
+        game_sessions.pop(interaction.channel_id, None)
+
+
+async def start_dice_battle(interaction: discord.Interaction):
+    channel_id = interaction.channel_id
+    if channel_id in game_sessions:
+        await interaction.response.send_message("すでにゲームが進行中じゃ。", ephemeral=True)
+        return
+    session = {"host": interaction.user, "players": [interaction.user], "type": "dice"}
+    game_sessions[channel_id] = session
+    view = DiceBattleLobbyView()
+    embed = build_dice_lobby_embed(session)
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+async def start_janken(interaction: discord.Interaction):
+    channel_id = interaction.channel_id
+    if channel_id in game_sessions:
+        await interaction.response.send_message("すでにゲームが進行中じゃ。", ephemeral=True)
+        return
+    session = {"host": interaction.user, "players": [interaction.user], "type": "janken", "choices": {}}
+    game_sessions[channel_id] = session
+    view = JankenLobbyView()
+    embed = build_janken_lobby_embed(session)
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+# ==========================================
 # SLASH COMMANDS (UI Dashboard / menu)
 # ==========================================
 
@@ -1235,6 +1547,8 @@ class MainMenuSelect(discord.ui.Select):
             discord.SelectOption(label="会話検知 (オン/オフ)", value="voice_chat", emoji="💬"),
             discord.SelectOption(label="もちもちに話しかける", value="mochimochi_chat", emoji="🤖"),
             discord.SelectOption(label="ソーチョーの幻想盤", value="fauxhollows", emoji="🦊"),
+            discord.SelectOption(label="ダイスバトル", value="dice_battle", emoji="🎲"),
+            discord.SelectOption(label="じゃんけん", value="janken_game", emoji="✊"),
         ]
 
         # menu_links.json から動的にリンク項目を追加
@@ -1304,6 +1618,10 @@ class MainMenuSelect(discord.ui.Select):
             await interaction.response.send_message(
                 "🦊 **ソーチョーの幻想盤**\nhttps://knt-a.com/fauxhollows/"
             )
+        elif val == "dice_battle":
+            await start_dice_battle(interaction)
+        elif val == "janken_game":
+            await start_janken(interaction)
         elif val == "disconnect":
             if vc:
                 await interaction.response.send_message("操作を受け付けたぞ。", ephemeral=True)
@@ -1364,6 +1682,11 @@ async def slash_menu(interaction: discord.Interaction):
 # ==========================================
 # SLASH COMMANDS (もちもち)
 # ==========================================
+
+
+@bot.tree.command(name="janken", description="じゃんけん大会を開催するのじゃ")
+async def slash_janken(interaction: discord.Interaction):
+    await start_janken(interaction)
 
 
 @bot.tree.command(name="もちもち", description="声で質問するのじゃ")
@@ -1623,7 +1946,10 @@ async def mjoin(ctx):
             "\n\n"
             f"/menu メニュー表示\n"
             f"/dice [最大値]\n"
-            f"/ダイス結果"
+            f"/ダイス結果\n"
+            f"!play [URL or Keyword]\n"
+            f"!stop\n"
+            f"!vol [0-80]"
         )
         
         await ctx.send(greet + info_msg)
