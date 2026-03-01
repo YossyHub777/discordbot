@@ -292,29 +292,43 @@ def raspi_stop():
     return jsonify({"success": False, "message": f"停止エラー", "output": output}), 500
 
 
+@app.route("/api/raspi/check", methods=["POST"])
+def raspi_check():
+    """Raspi側のgit fetchを実行してbehind数を返す"""
+    git_cmd = f"git -C {RASPI_BOT_DIR}"
+    code, output = run_local(f"{git_cmd} fetch origin", timeout=30)
+    if code != 0:
+        return jsonify({"success": False, "message": "fetch エラー", "output": output}), 500
+
+    _, branch = run_local(f"{git_cmd} rev-parse --abbrev-ref HEAD")
+    _, behind_str = run_local(
+        f"{git_cmd} rev-list HEAD..origin/{branch.strip()} --count 2>/dev/null || echo 0"
+    )
+    try:
+        behind = int(behind_str.strip())
+    except ValueError:
+        behind = 0
+
+    msg = f"{behind}件の更新があります" if behind > 0 else "最新です"
+    return jsonify({"success": True, "message": msg, "behind": behind, "output": output})
+
+
 @app.route("/api/raspi/pull", methods=["POST"])
 def raspi_pull():
     git_cmd = f"git -C {RASPI_BOT_DIR}"
-    logs = []
-
-    # fetchしてからpull（Pull操作時はfetch可）
-    code, output = run_local(f"{git_cmd} fetch origin", timeout=30)
-    logs.append(f"[fetch] exit={code}\n{output}")
-
     pull_url = f"https://{GITHUB_TOKEN}@github.com/YossyHub777/discordbot.git"
-    code, output = run_local(
-        f"{git_cmd} pull {pull_url} main", timeout=120
-    )
-    logs.append(f"[pull] exit={code}\n{output}")
-    if code != 0:
-        return jsonify({"success": False, "message": "Pull エラー", "output": "\n".join(logs)}), 500
+    code, output = run_local(f"{git_cmd} pull {pull_url} main", timeout=120)
+    if code == 0:
+        return jsonify({"success": True, "message": "Pull が完了しました", "output": output})
+    return jsonify({"success": False, "message": "Pull エラー", "output": output}), 500
 
+
+@app.route("/api/raspi/restart", methods=["POST"])
+def raspi_restart():
     code, output = run_local(f"{RASPI_COMPOSE} restart mochigami", timeout=120)
-    logs.append(f"[restart] exit={code}\n{output}")
-    if code != 0:
-        return jsonify({"success": False, "message": "再起動エラー", "output": "\n".join(logs)}), 500
-
-    return jsonify({"success": True, "message": "Pull & 再起動が完了しました", "output": "\n".join(logs)})
+    if code == 0:
+        return jsonify({"success": True, "message": "Raspi Bot を再起動しました", "output": output})
+    return jsonify({"success": False, "message": "再起動エラー", "output": output}), 500
 
 
 # --- Windows操作 ---
@@ -349,32 +363,52 @@ def windows_stop():
     return jsonify({"success": False, "message": "停止エラー", "output": output}), 500
 
 
+@app.route("/api/windows/check", methods=["POST"])
+def windows_check():
+    """Windows側のgit fetchを実行してbehind数を返す"""
+    if not check_windows_online():
+        return jsonify({"success": False, "message": "Windows PCがオフラインです", "output": ""}), 503
+
+    git_cmd = f"git -C {WINDOWS_BOT_DIR}"
+    code, output = ssh_exec(f"{git_cmd} fetch origin", timeout=30)
+    if code != 0:
+        return jsonify({"success": False, "message": "fetch エラー", "output": output}), 500
+
+    _, branch = ssh_exec(f"{git_cmd} rev-parse --abbrev-ref HEAD")
+    _, behind_str = ssh_exec(
+        f'{git_cmd} rev-list HEAD..origin/{branch.strip()} --count 2>nul || echo 0'
+    )
+    try:
+        behind = int(behind_str.strip())
+    except ValueError:
+        behind = 0
+
+    msg = f"{behind}件の更新があります" if behind > 0 else "最新です"
+    return jsonify({"success": True, "message": msg, "behind": behind, "output": output})
+
+
 @app.route("/api/windows/pull", methods=["POST"])
 def windows_pull():
     if not check_windows_online():
         return jsonify({"success": False, "message": "Windows PCがオフラインです", "output": ""}), 503
 
     git_cmd = f"git -C {WINDOWS_BOT_DIR}"
-    logs = []
-
-    # fetchしてからpull（Pull操作時はfetch可）
-    code, output = ssh_exec(f"{git_cmd} fetch origin", timeout=30)
-    logs.append(f"[fetch] exit={code}\n{output}")
-
     pull_url = f"https://{GITHUB_TOKEN}@github.com/YossyHub777/discordbot.git"
-    code, output = ssh_exec(
-        f"{git_cmd} pull {pull_url} main", timeout=120
-    )
-    logs.append(f"[pull] exit={code}\n{output}")
-    if code != 0:
-        return jsonify({"success": False, "message": "Pull エラー", "output": "\n".join(logs)}), 500
+    code, output = ssh_exec(f"{git_cmd} pull {pull_url} main", timeout=120)
+    if code == 0:
+        return jsonify({"success": True, "message": "Pull が完了しました", "output": output})
+    return jsonify({"success": False, "message": "Pull エラー", "output": output}), 500
+
+
+@app.route("/api/windows/restart", methods=["POST"])
+def windows_restart():
+    if not check_windows_online():
+        return jsonify({"success": False, "message": "Windows PCがオフラインです", "output": ""}), 503
 
     code, output = ssh_exec(f"{WINDOWS_COMPOSE} restart mochigami", timeout=120)
-    logs.append(f"[restart] exit={code}\n{output}")
-    if code != 0:
-        return jsonify({"success": False, "message": "再起動エラー", "output": "\n".join(logs)}), 500
-
-    return jsonify({"success": True, "message": "Pull & 再起動が完了しました", "output": "\n".join(logs)})
+    if code == 0:
+        return jsonify({"success": True, "message": "Windows Bot を再起動しました", "output": output})
+    return jsonify({"success": False, "message": "再起動エラー", "output": output}), 500
 
 
 # ============================================================
@@ -382,3 +416,4 @@ def windows_pull():
 # ============================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=31173, debug=False)
+

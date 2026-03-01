@@ -443,6 +443,24 @@
       border-color: var(--accent-gold);
     }
 
+    .btn-check {
+      border-color: rgba(52, 152, 219, 0.3);
+    }
+
+    .btn-check:hover:not(:disabled) {
+      background: rgba(52, 152, 219, 0.15);
+      border-color: var(--accent-blue);
+    }
+
+    .btn-restart {
+      border-color: rgba(230, 126, 34, 0.3);
+    }
+
+    .btn-restart:hover:not(:disabled) {
+      background: rgba(230, 126, 34, 0.15);
+      border-color: var(--accent-orange);
+    }
+
     /* Spinner */
     .spinner {
       display: none;
@@ -755,8 +773,14 @@
             <button class="btn btn-stop" id="winStopBtn" onclick="sendAction('windows', 'stop', this)">
               <span class="btn-icon">⏹</span><span class="spinner"></span> 停止
             </button>
-            <button class="btn btn-pull" id="winPullBtn" onclick="sendAction('windows', 'pull', this)">
-              <span class="btn-icon">⬇</span><span class="spinner"></span> Pull + 再起動
+            <button class="btn btn-check" id="winCheckBtn" onclick="sendAction('windows', 'check', this)">
+              <span class="btn-icon">🔍</span><span class="spinner"></span> Git確認
+            </button>
+            <button class="btn btn-pull" id="winPullBtn" onclick="sendAction('windows', 'pull', this)" disabled>
+              <span class="btn-icon">⬇</span><span class="spinner"></span> Pull
+            </button>
+            <button class="btn btn-restart" id="winRestartBtn" onclick="sendAction('windows', 'restart', this)">
+              <span class="btn-icon">🔄</span><span class="spinner"></span> 再起動
             </button>
           </div>
           <div id="winMessage"></div>
@@ -802,8 +826,14 @@
             <button class="btn btn-stop" id="raspiStopBtn" onclick="sendAction('raspi', 'stop', this)">
               <span class="btn-icon">⏹</span><span class="spinner"></span> 停止
             </button>
-            <button class="btn btn-pull" id="raspiPullBtn" onclick="sendAction('raspi', 'pull', this)">
-              <span class="btn-icon">⬇</span><span class="spinner"></span> Pull + 再起動
+            <button class="btn btn-check" id="raspiCheckBtn" onclick="sendAction('raspi', 'check', this)">
+              <span class="btn-icon">🔍</span><span class="spinner"></span> Git確認
+            </button>
+            <button class="btn btn-pull" id="raspiPullBtn" onclick="sendAction('raspi', 'pull', this)" disabled>
+              <span class="btn-icon">⬇</span><span class="spinner"></span> Pull
+            </button>
+            <button class="btn btn-restart" id="raspiRestartBtn" onclick="sendAction('raspi', 'restart', this)">
+              <span class="btn-icon">🔄</span><span class="spinner"></span> 再起動
             </button>
           </div>
           <div id="raspiMessage"></div>
@@ -961,34 +991,43 @@
       // Raspi側ボタン
       const raspiStart = document.getElementById('raspiStartBtn');
       const raspiStop = document.getElementById('raspiStopBtn');
-      const raspiPull = document.getElementById('raspiPullBtn');
+      const raspiRestart = document.getElementById('raspiRestartBtn');
       if (!raspiStart.classList.contains('loading')) {
-        raspiStart.disabled = raspiRunning;  // 起動中なら起動ボタン無効
+        raspiStart.disabled = raspiRunning;
       }
       if (!raspiStop.classList.contains('loading')) {
-        raspiStop.disabled = !raspiRunning;  // 停止中なら停止ボタン無効
+        raspiStop.disabled = !raspiRunning;
       }
-      if (!raspiPull.classList.contains('loading')) {
-        raspiPull.disabled = false;  // Pullは常に有効
+      if (!raspiRestart.classList.contains('loading')) {
+        raspiRestart.disabled = !raspiRunning;
       }
+      // PullボタンとCheckボタンは状態に依存しない（Pullはcheckで制御）
 
       // Windows側ボタン
       const winStart = document.getElementById('winStartBtn');
       const winStop = document.getElementById('winStopBtn');
+      const winCheck = document.getElementById('winCheckBtn');
       const winPull = document.getElementById('winPullBtn');
+      const winRestart = document.getElementById('winRestartBtn');
       if (!winOnline) {
-        // オフライン時は全無効
-        [winStart, winStop, winPull].forEach(b => { if (!b.classList.contains('loading')) b.disabled = true; });
+        [winStart, winStop, winCheck, winPull, winRestart].forEach(b => {
+          if (!b.classList.contains('loading')) b.disabled = true;
+        });
       } else {
         if (!winStart.classList.contains('loading')) {
-          winStart.disabled = winRunning;  // 起動中なら起動ボタン無効
+          winStart.disabled = winRunning;
         }
         if (!winStop.classList.contains('loading')) {
-          winStop.disabled = !winRunning;  // 停止中なら停止ボタン無効
+          winStop.disabled = !winRunning;
         }
-        if (!winPull.classList.contains('loading')) {
-          winPull.disabled = false;
+        if (!winRestart.classList.contains('loading')) {
+          winRestart.disabled = !winRunning;
         }
+        // Checkボタンはオンライン時は常に有効
+        if (!winCheck.classList.contains('loading')) {
+          winCheck.disabled = false;
+        }
+        // Pullボタンはcheckで制御（ここでは触らない）
       }
     }
 
@@ -1004,7 +1043,6 @@
 
     function addLog(server, type, message, output) {
       const logWindow = document.getElementById('logWindow');
-      // 初回ログ時にプレースホルダーを消す
       if (!logStarted) {
         logWindow.innerHTML = '';
         logStarted = true;
@@ -1046,7 +1084,7 @@
       const msgEl = document.getElementById(server === 'windows' ? 'winMessage' : 'raspiMessage');
       msgEl.innerHTML = '';
 
-      const actionLabels = { start: '起動', stop: '停止', pull: 'Pull+再起動' };
+      const actionLabels = { start: '起動', stop: '停止', check: 'Git確認', pull: 'Pull', restart: '再起動' };
       addLog(server, 'info', `${actionLabels[action]} を実行中...`, '');
 
       // Loading state
@@ -1056,7 +1094,9 @@
       const labels = {
         start: '起動中...',
         stop: '停止中...',
-        pull: 'Pull中...'
+        check: '確認中...',
+        pull: 'Pull中...',
+        restart: '再起動中...'
       };
 
       const originalText = btn.childNodes[btn.childNodes.length - 1].textContent;
@@ -1069,20 +1109,49 @@
         if (data.success) {
           showMessage(msgEl, 'success', data.message);
           addLog(server, 'success', data.message, data.output || '');
+
+          // Git確認の結果でPullボタンを制御
+          if (action === 'check' && data.behind !== undefined) {
+            const prefix = server === 'windows' ? 'win' : 'raspi';
+            const pullBtn = document.getElementById(prefix + 'PullBtn');
+            pullBtn.disabled = data.behind === 0;
+
+            // behind表示を更新
+            const behindEl = document.getElementById(prefix + 'Behind');
+            if (data.behind > 0) {
+              behindEl.textContent = `⚠️ ${data.behind}コミット遅れ`;
+              behindEl.className = 'git-value behind-warn';
+            } else {
+              behindEl.textContent = '✅ 最新';
+              behindEl.className = 'git-value behind-ok';
+            }
+          }
+
+          // Pull成功後はPullボタンを無効に戻す
+          if (action === 'pull') {
+            const prefix = server === 'windows' ? 'win' : 'raspi';
+            document.getElementById(prefix + 'PullBtn').disabled = true;
+          }
         } else {
           showMessage(msgEl, 'error', data.message);
           addLog(server, 'error', data.message, data.output || '');
         }
 
-        // Refresh status immediately
-        await fetchStatus();
+        // ステータスを即時更新（check以外）
+        if (action !== 'check') {
+          await fetchStatus();
+        }
 
       } catch (e) {
         showMessage(msgEl, 'error', `通信エラー: ${e.message}`);
         addLog(server, 'error', `通信エラー: ${e.message}`, '');
       } finally {
         btn.classList.remove('loading');
-        btn.disabled = false;
+        // check/pull以外のボタンはfetchStatusで制御されるのでここでは戻さない
+        if (action === 'check' || action === 'pull') {
+          // checkは常に有効に戻す、pullはdisabledのまま（上で制御済み）
+          if (action === 'check') btn.disabled = false;
+        }
         btn.childNodes[btn.childNodes.length - 1].textContent = ' ' + originalText.trim();
       }
     }
