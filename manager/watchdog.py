@@ -5,18 +5,28 @@ Windowsが落ちた場合にRaspi側Botを自動起動する
 
 import json
 import logging
+import os
 import socket
 import subprocess
 import time
+import threading
 from datetime import datetime
+
+import paramiko
 
 # ============================================================
 # 設定
 # ============================================================
 WINDOWS_HOST = "YOSSYHUB-PC.local"
+WINDOWS_USER = "yossy.hub"
+WINDOWS_BOT_DIR = "C:\\yossyhub\\discord-bot"
+WINDOWS_COMPOSE = f"docker compose -f {WINDOWS_BOT_DIR}\\docker-compose.yml"
 WINDOWS_CHECK_PORT = 50021
-CHECK_INTERVAL = 60  # 秒
+CHECK_INTERVAL = 600  # 10分
 TIMEOUT = 3
+
+SSH_PASSWORD = os.environ.get("SSH_PASSWORD", "")
+ssh_lock = threading.Lock()
 
 RASPI_BOT_DIR = "/data/compose/discord-bot"
 RASPI_COMPOSE = f"docker compose -f {RASPI_BOT_DIR}/docker-compose.yml"
@@ -34,17 +44,68 @@ logging.basicConfig(
 logger = logging.getLogger("watchdog")
 
 
-# ============================================================
-# ユーティリティ
-# ============================================================
+def ssh_exec(command: str, timeout: int = 10) -> tuple[int, str]:
+    """Windows PCにSSH接続してコマンドを実行"""
+    with ssh_lock:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(
+                WINDOWS_HOST,
+                username=WINDOWS_USER,
+                password=SSH_PASSWORD,
+                timeout=10,
+            )
+            stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+            exit_code = stdout.channel.recv_exit_status()
+            output = (stdout.read().decode() + stderr.read().decode()).strip()
+            return exit_code, output
+        except Exception as e:
+            return -1, f"SSH接続エラー: {e}"
+        finally:
+            client.close()
+
+def is_container_running(compose_output: str, service_name: str) -> bool:
+    """docker compose ps の出力から指定サービスが動作中か判定"""
+    lines = compose_output.splitlines()
+    if len(lines) < 2:
+        return False
+
+    header = lines[0]
+    service_col = header.find("SERVICE")
+    created_col = header.find("CREATED")
+    if created_col == -1:
+        created_col = header.find("STATUS")
+
+    if service_col == -1 or created_col == -1:
+        for line in lines[1:]:
+            parts = line.split()
+            if service_name in parts:
+                lower = line.lower()
+                if "running" in lower or "up" in lower:
+                    return True
+        return False
+
+    for line in lines[1:]:
+        if len(line) < service_col:
+            continue
+        service_value = line[service_col:created_col].strip()
+        if service_value == service_name:
+            lower = line.lower()
+            if "running" in lower or "up" in lower:
+                return True
+    return False
+
 def check_windows_online() -> bool:
-    """WindowsのVOICEVOXポートへTCP接続して死活確認"""
+    """Windows側のmochigamiコンテナが起動しているか確認"""
     try:
-        with socket.create_connection(
-            (WINDOWS_HOST, WINDOWS_CHECK_PORT), timeout=TIMEOUT
-        ):
-            return True
-    except (socket.timeout, socket.error, OSError):
+        # PC自体がオフラインかどうかはSSH接続の成否で判定
+        exit_code, output = ssh_exec(f"{WINDOWS_COMPOSE} ps")
+        if exit_code != 0:
+            return False
+            
+        return is_container_running(output, "mochigami")
+    except Exception:
         return False
 
 

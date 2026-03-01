@@ -29,7 +29,10 @@ services:
     environment:
       - TZ=Asia/Tokyo
       - PYTHONUNBUFFERED=1
+      - SSH_PASSWORD=${SSH_PASSWORD}
     volumes:
+      - ./manager:/app
+      - /data/compose/discord-bot:/data/compose/discord-bot
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp:/tmp
     command: ["python", "watchdog.py"]

@@ -725,8 +725,6 @@
           <span class="status-dot" id="watchdogDot"></span>
           watchdog: <span id="watchdogLabel">確認中...</span>
         </span>
-        <span class="divider">|</span>
-        <span id="watchdogNext">次回確認: --</span>
       </div>
     </header>
 
@@ -926,17 +924,13 @@
         const wd = data.watchdog;
         const wdDot = document.getElementById('watchdogDot');
         const wdLabel = document.getElementById('watchdogLabel');
-        const wdNext = document.getElementById('watchdogNext');
+
         if (wd.running) {
           wdDot.className = 'status-dot online';
-          wdLabel.textContent = '🟢 監視中';
-          wdNext.textContent = wd.next_check_seconds !== null
-            ? `次回確認: ${wd.next_check_seconds}秒後`
-            : '次回確認: --';
+          wdLabel.textContent = '🟢 稼働中';
         } else {
           wdDot.className = 'status-dot offline';
           wdLabel.textContent = '🔴 停止中';
-          wdNext.textContent = '次回確認: --';
         }
 
         // --- Raspi ---
