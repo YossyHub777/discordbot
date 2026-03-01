@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⛩️ もち神さま Bot Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;500;700&family=M+PLUS+Rounded+1c:wght@400;500;700&display=swap"
+    rel="stylesheet">
+  <style>
+    /* ============================================================
+       CSS Variables & Reset
+       ============================================================ */
+    :root {
+      --bg-primary: #0d0d1a;
+      --bg-secondary: #141428;
+      --bg-card: #1a1a35;
+      --bg-card-hover: #222245;
+      --accent-gold: #d4a843;
+      --accent-gold-dim: #a07830;
+      --accent-red: #c0392b;
+      --accent-red-glow: rgba(192, 57, 43, 0.3);
+      --accent-green: #27ae60;
+      --accent-green-glow: rgba(39, 174, 96, 0.3);
+      --accent-orange: #e67e22;
+      --accent-blue: #3498db;
+      --text-primary: #e8e6e3;
+      --text-secondary: #9e9bab;
+      --text-muted: #6b6880;
+      --border-color: #2a2a50;
+      --torii-red: #b93030;
+      --torii-red-glow: rgba(185, 48, 48, 0.15);
+      --sakura-pink: #f0a0b0;
+      --shadow-glow: 0 0 30px rgba(212, 168, 67, 0.08);
+      --font-main: 'Zen Maru Gothic', 'M PLUS Rounded 1c', sans-serif;
+      --radius: 12px;
+      --radius-lg: 16px;
+      --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: var(--font-main);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ============================================================
+       Background Decoration
+       ============================================================ */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background:
+        radial-gradient(ellipse at 20% 20%, rgba(185, 48, 48, 0.06) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 80%, rgba(212, 168, 67, 0.05) 0%, transparent 50%),
+        radial-gradient(ellipse at 50% 50%, rgba(240, 160, 176, 0.03) 0%, transparent 40%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Floating particles */
+    .particles {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 0;
+      overflow: hidden;
+    }
+
+    .particle {
+      position: absolute;
+      border-radius: 50%;
+      animation: float-particle linear infinite;
+      opacity: 0;
+    }
+
+    @keyframes float-particle {
+      0% {
+        transform: translateY(100vh) rotate(0deg);
+        opacity: 0;
+      }
+
+      10% {
+        opacity: 0.6;
+      }
+
+      90% {
+        opacity: 0.6;
+      }
+
+      100% {
+        transform: translateY(-10vh) rotate(360deg);
+        opacity: 0;
+      }
+    }
+
+    /* ============================================================
+       Layout
+       ============================================================ */
+    .container {
+      position: relative;
+      z-index: 1;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 30px 24px;
+    }
+
+    /* ============================================================
+       Header
+       ============================================================ */
+    .header {
+      text-align: center;
+      margin-bottom: 28px;
+      padding: 32px 24px 24px;
+      background: linear-gradient(135deg, var(--bg-card) 0%, rgba(185, 48, 48, 0.08) 100%);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-glow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .header::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, var(--torii-red), var(--accent-gold), var(--torii-red), transparent);
+    }
+
+    .header-title {
+      font-size: 2rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent-gold) 0%, #f0d090 40%, var(--sakura-pink) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 12px;
+      letter-spacing: 0.05em;
+    }
+
+    .header-title .torii {
+      -webkit-text-fill-color: var(--torii-red);
+      font-size: 1.8rem;
+      margin-right: 4px;
+      filter: drop-shadow(0 0 6px var(--accent-red-glow));
+    }
+
+    .watchdog-bar {
+      display: inline-flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 20px;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 24px;
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+    }
+
+    .watchdog-bar .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+
+    .watchdog-bar .status-dot.online {
+      background: var(--accent-green);
+      box-shadow: 0 0 8px var(--accent-green-glow);
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+
+    .watchdog-bar .status-dot.offline {
+      background: var(--accent-red);
+      box-shadow: 0 0 8px var(--accent-red-glow);
+    }
+
+    @keyframes pulse-dot {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.5;
+      }
+    }
+
+    .divider {
+      color: var(--text-muted);
+    }
+
+    /* ============================================================
+       Server Cards Grid
+       ============================================================ */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    .server-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 0;
+      overflow: hidden;
+      transition: var(--transition);
+      box-shadow: var(--shadow-glow);
+    }
+
+    .server-card:hover {
+      border-color: var(--accent-gold-dim);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), var(--shadow-glow);
+    }
+
+    /* Card Header */
+    .card-header {
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .card-header.windows {
+      background: linear-gradient(135deg, rgba(52, 152, 219, 0.08) 0%, transparent 100%);
+    }
+
+    .card-header.raspi {
+      background: linear-gradient(135deg, rgba(231, 76, 60, 0.08) 0%, transparent 100%);
+    }
+
+    .card-icon {
+      font-size: 1.5rem;
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .online-badge {
+      margin-left: auto;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+
+    .online-badge.online {
+      background: rgba(39, 174, 96, 0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(39, 174, 96, 0.3);
+    }
+
+    .online-badge.offline {
+      background: rgba(192, 57, 43, 0.15);
+      color: var(--accent-red);
+      border: 1px solid rgba(192, 57, 43, 0.3);
+    }
+
+    /* Card Body */
+    .card-body {
+      padding: 20px 24px;
+    }
+
+    /* Status Rows */
+    .status-section {
+      margin-bottom: 20px;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(42, 42, 80, 0.5);
+    }
+
+    .status-row:last-child {
+      border-bottom: none;
+    }
+
+    .status-label {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .status-value {
+      font-weight: 500;
+      font-size: 0.9rem;
+    }
+
+    .status-value.running {
+      color: var(--accent-green);
+    }
+
+    .status-value.stopped {
+      color: var(--accent-red);
+    }
+
+    .status-value.unknown {
+      color: var(--text-muted);
+    }
+
+    /* Git Section */
+    .git-section {
+      background: rgba(0, 0, 0, 0.15);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 20px;
+    }
+
+    .git-section-title {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 10px;
+    }
+
+    .git-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+      font-size: 0.85rem;
+    }
+
+    .git-label {
+      color: var(--text-secondary);
+    }
+
+    .git-value {
+      color: var(--text-primary);
+      font-family: 'Courier New', monospace;
+    }
+
+    .behind-ok {
+      color: var(--accent-green);
+    }
+
+    .behind-warn {
+      color: var(--accent-orange);
+    }
+
+    .behind-unknown {
+      color: var(--text-muted);
+    }
+
+    /* Action Buttons */
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      background: rgba(0, 0, 0, 0.2);
+      color: var(--text-primary);
+      font-family: var(--font-main);
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: var(--transition);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+    }
+
+    .btn:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-start {
+      border-color: rgba(39, 174, 96, 0.3);
+    }
+
+    .btn-start:hover:not(:disabled) {
+      background: rgba(39, 174, 96, 0.15);
+      border-color: var(--accent-green);
+    }
+
+    .btn-stop {
+      border-color: rgba(192, 57, 43, 0.3);
+    }
+
+    .btn-stop:hover:not(:disabled) {
+      background: rgba(192, 57, 43, 0.15);
+      border-color: var(--accent-red);
+    }
+
+    .btn-pull {
+      border-color: rgba(212, 168, 67, 0.3);
+    }
+
+    .btn-pull:hover:not(:disabled) {
+      background: rgba(212, 168, 67, 0.15);
+      border-color: var(--accent-gold);
+    }
+
+    /* Spinner */
+    .spinner {
+      display: none;
+      width: 16px;
+      height: 16px;
+      border: 2px solid transparent;
+      border-top: 2px solid currentColor;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    .btn.loading .spinner {
+      display: inline-block;
+    }
+
+    .btn.loading .btn-icon {
+      display: none;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    /* Messages */
+    .message {
+      margin-top: 12px;
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      font-size: 0.85rem;
+      text-align: center;
+      animation: fade-in 0.3s ease;
+    }
+
+    .message.success {
+      background: rgba(39, 174, 96, 0.12);
+      color: var(--accent-green);
+      border: 1px solid rgba(39, 174, 96, 0.25);
+    }
+
+    .message.error {
+      background: rgba(192, 57, 43, 0.12);
+      color: #e74c3c;
+      border: 1px solid rgba(192, 57, 43, 0.25);
+    }
+
+    .message.info {
+      background: rgba(52, 152, 219, 0.12);
+      color: var(--accent-blue);
+      border: 1px solid rgba(52, 152, 219, 0.25);
+    }
+
+    @keyframes fade-in {
+      from {
+        opacity: 0;
+        transform: translateY(-4px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* ============================================================
+       Log Window
+       ============================================================ */
+    .log-section {
+      margin-top: 24px;
+    }
+
+    .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 18px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-bottom: none;
+      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    }
+
+    .log-header-title {
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .log-clear-btn {
+      background: none;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      font-family: var(--font-main);
+      font-size: 0.75rem;
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: var(--transition);
+    }
+
+    .log-clear-btn:hover {
+      color: var(--text-secondary);
+      border-color: var(--text-muted);
+    }
+
+    .log-window {
+      background: #0a0a16;
+      border: 1px solid var(--border-color);
+      border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+      padding: 14px 18px;
+      height: 200px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 0.8rem;
+      line-height: 1.6;
+    }
+
+    .log-window::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .log-window::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .log-window::-webkit-scrollbar-thumb {
+      background: var(--border-color);
+      border-radius: 3px;
+    }
+
+    .log-entry {
+      margin-bottom: 4px;
+      animation: fade-in 0.2s ease;
+    }
+
+    .log-time {
+      color: var(--text-muted);
+    }
+
+    .log-server {
+      font-weight: 500;
+    }
+
+    .log-server.windows {
+      color: var(--accent-blue);
+    }
+
+    .log-server.raspi {
+      color: var(--accent-orange);
+    }
+
+    .log-success {
+      color: var(--accent-green);
+    }
+
+    .log-error {
+      color: #e74c3c;
+    }
+
+    .log-info {
+      color: var(--text-secondary);
+    }
+
+    .log-output {
+      color: var(--text-muted);
+      white-space: pre-wrap;
+      word-break: break-all;
+      margin-left: 16px;
+    }
+
+    .log-empty {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* ============================================================
+       Footer
+       ============================================================ */
+    .footer {
+      text-align: center;
+      margin-top: 20px;
+      padding: 16px;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+
+    .footer .refresh-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-muted);
+    }
+
+    .footer .refresh-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--accent-gold-dim);
+      border-radius: 50%;
+      animation: pulse-dot 3s ease-in-out infinite;
+    }
+
+    /* ============================================================
+       Connecting Overlay
+       ============================================================ */
+    .connecting-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(13, 13, 26, 0.85);
+      z-index: 100;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .connecting-overlay.visible {
+      display: flex;
+    }
+
+    .connecting-spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--border-color);
+      border-top: 3px solid var(--accent-gold);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    .connecting-text {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Floating Particles -->
+  <div class="particles" id="particles"></div>
+
+  <!-- Connecting Overlay -->
+  <div class="connecting-overlay" id="connectingOverlay">
+    <div class="connecting-spinner"></div>
+    <div class="connecting-text">サーバーに接続中...</div>
+  </div>
+
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <h1 class="header-title">
+        <span class="torii">⛩️</span> もち神さま Bot Manager
+      </h1>
+      <div class="watchdog-bar">
+        <span>
+          <span class="status-dot" id="watchdogDot"></span>
+          watchdog: <span id="watchdogLabel">確認中...</span>
+        </span>
+        <span class="divider">|</span>
+        <span id="watchdogNext">次回確認: --</span>
+      </div>
+    </header>
+
+    <!-- Server Cards -->
+    <div class="cards-grid">
+
+      <!-- ===== Windows PC Card ===== -->
+      <div class="server-card" id="windowsCard">
+        <div class="card-header windows">
+          <span class="card-icon">🖥️</span>
+          <span class="card-title">Windows PC</span>
+          <span class="online-badge" id="windowsOnlineBadge">確認中</span>
+        </div>
+        <div class="card-body">
+          <div class="status-section">
+            <div class="status-row">
+              <span class="status-label">🤖 Bot</span>
+              <span class="status-value unknown" id="winBotStatus">--</span>
+            </div>
+          </div>
+          <div class="git-section">
+            <div class="git-section-title">📦 Git 情報</div>
+            <div class="git-row">
+              <span class="git-label">ブランチ</span>
+              <span class="git-value" id="winBranch">--</span>
+            </div>
+            <div class="git-row">
+              <span class="git-label">コミット</span>
+              <span class="git-value" id="winCommit">--</span>
+            </div>
+            <div class="git-row">
+              <span class="git-label">日時</span>
+              <span class="git-value" id="winCommitDate">--</span>
+            </div>
+            <div class="git-row">
+              <span class="git-label">GitHub</span>
+              <span class="git-value" id="winBehind">--</span>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-start" id="winStartBtn" onclick="sendAction('windows', 'start', this)">
+              <span class="btn-icon">▶</span><span class="spinner"></span> 起動
+            </button>
+            <button class="btn btn-stop" id="winStopBtn" onclick="sendAction('windows', 'stop', this)">
+              <span class="btn-icon">⏹</span><span class="spinner"></span> 停止
+            </button>
+            <button class="btn btn-pull" id="winPullBtn" onclick="sendAction('windows', 'pull', this)">
+              <span class="btn-icon">⬇</span><span class="spinner"></span> Pull + 再起動
+            </button>
+          </div>
+          <div id="winMessage"></div>
+        </div>
+      </div>
+
+      <!-- ===== Raspi5 Card ===== -->
+      <div class="server-card" id="raspiCard">
+        <div class="card-header raspi">
+          <span class="card-icon">🍓</span>
+          <span class="card-title">Raspi5</span>
+        </div>
+        <div class="card-body">
+          <div class="status-section">
+            <div class="status-row">
+              <span class="status-label">🤖 Bot</span>
+              <span class="status-value unknown" id="raspiBotStatus">--</span>
+            </div>
+          </div>
+          <div class="git-section">
+            <div class="git-section-title">📦 Git 情報</div>
+            <div class="git-row">
+              <span class="git-label">ブランチ</span>
+              <span class="git-value" id="raspiBranch">--</span>
+            </div>
+            <div class="git-row">
+              <span class="git-label">コミット</span>
+              <span class="git-value" id="raspiCommit">--</span>
+            </div>
+            <div class="git-row">
+              <span class="git-label">日時</span>
+              <span class="git-value" id="raspiCommitDate">--</span>
+            </div>
+            <div class="git-row">
+              <span class="git-label">GitHub</span>
+              <span class="git-value" id="raspiBehind">--</span>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-start" id="raspiStartBtn" onclick="sendAction('raspi', 'start', this)">
+              <span class="btn-icon">▶</span><span class="spinner"></span> 起動
+            </button>
+            <button class="btn btn-stop" id="raspiStopBtn" onclick="sendAction('raspi', 'stop', this)">
+              <span class="btn-icon">⏹</span><span class="spinner"></span> 停止
+            </button>
+            <button class="btn btn-pull" id="raspiPullBtn" onclick="sendAction('raspi', 'pull', this)">
+              <span class="btn-icon">⬇</span><span class="spinner"></span> Pull + 再起動
+            </button>
+          </div>
+          <div id="raspiMessage"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Log Window -->
+    <div class="log-section">
+      <div class="log-header">
+        <span class="log-header-title">📜 操作ログ</span>
+        <button class="log-clear-btn" onclick="clearLog()">クリア</button>
+      </div>
+      <div class="log-window" id="logWindow">
+        <div class="log-entry log-empty">操作ログがここに表示されます...</div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <span class="refresh-indicator">
+        <span class="refresh-dot"></span>
+        60秒ごとに自動更新
+      </span>
+    </div>
+  </div>
+
+  <script>
+    // ============================================================
+    // Particles
+    // ============================================================
+    (function initParticles() {
+      const container = document.getElementById('particles');
+      const colors = ['rgba(240,160,176,0.4)', 'rgba(212,168,67,0.3)', 'rgba(185,48,48,0.25)'];
+      for (let i = 0; i < 15; i++) {
+        const p = document.createElement('div');
+        p.className = 'particle';
+        const size = 3 + Math.random() * 5;
+        p.style.width = size + 'px';
+        p.style.height = size + 'px';
+        p.style.left = Math.random() * 100 + '%';
+        p.style.background = colors[Math.floor(Math.random() * colors.length)];
+        p.style.animationDuration = (15 + Math.random() * 25) + 's';
+        p.style.animationDelay = (Math.random() * 20) + 's';
+        container.appendChild(p);
+      }
+    })();
+
+    // ============================================================
+    // Status Polling
+    // ============================================================
+    let isFirstLoad = true;
+    let pollTimer = null;
+
+    function formatBehind(behind) {
+      if (behind === null || behind === undefined) {
+        return { text: '📡 未取得', cls: 'behind-unknown' };
+      }
+      if (behind === 0) {
+        return { text: '✅ 最新', cls: 'behind-ok' };
+      }
+      return { text: `⚠️ ${behind}コミット遅れ`, cls: 'behind-warn' };
+    }
+
+    function setServiceStatus(elId, running) {
+      const el = document.getElementById(elId);
+      if (running) {
+        el.textContent = '🟢 起動中';
+        el.className = 'status-value running';
+      } else {
+        el.textContent = '🔴 停止中';
+        el.className = 'status-value stopped';
+      }
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        if (!res.ok) throw new Error('API Error');
+        const data = await res.json();
+
+        // Hide overlay on first successful load
+        if (isFirstLoad) {
+          document.getElementById('connectingOverlay').classList.remove('visible');
+          isFirstLoad = false;
+        }
+
+        // --- Watchdog ---
+        const wd = data.watchdog;
+        const wdDot = document.getElementById('watchdogDot');
+        const wdLabel = document.getElementById('watchdogLabel');
+        const wdNext = document.getElementById('watchdogNext');
+        if (wd.running) {
+          wdDot.className = 'status-dot online';
+          wdLabel.textContent = '🟢 監視中';
+          wdNext.textContent = wd.next_check_seconds !== null
+            ? `次回確認: ${wd.next_check_seconds}秒後`
+            : '次回確認: --';
+        } else {
+          wdDot.className = 'status-dot offline';
+          wdLabel.textContent = '🔴 停止中';
+          wdNext.textContent = '次回確認: --';
+        }
+
+        // --- Raspi ---
+        const raspi = data.raspi;
+        setServiceStatus('raspiBotStatus', raspi.bot_running);
+        document.getElementById('raspiBranch').textContent = raspi.branch || '--';
+        document.getElementById('raspiCommit').textContent = raspi.commit || '--';
+        document.getElementById('raspiCommitDate').textContent = raspi.commit_date || '--';
+        const rBehind = formatBehind(raspi.behind);
+        const raspiB = document.getElementById('raspiBehind');
+        raspiB.textContent = rBehind.text;
+        raspiB.className = 'git-value ' + rBehind.cls;
+
+        // --- Windows ---
+        const win = data.windows;
+        const winBadge = document.getElementById('windowsOnlineBadge');
+        if (win.online) {
+          winBadge.textContent = 'オンライン';
+          winBadge.className = 'online-badge online';
+          setServiceStatus('winBotStatus', win.bot_running);
+          document.getElementById('winBranch').textContent = win.branch || '--';
+          document.getElementById('winCommit').textContent = win.commit || '--';
+          document.getElementById('winCommitDate').textContent = win.commit_date || '--';
+          const wBehind = formatBehind(win.behind);
+          const winB = document.getElementById('winBehind');
+          winB.textContent = wBehind.text;
+          winB.className = 'git-value ' + wBehind.cls;
+        } else {
+          winBadge.textContent = 'オフライン';
+          winBadge.className = 'online-badge offline';
+          document.getElementById('winBotStatus').textContent = '-- オフライン';
+          document.getElementById('winBotStatus').className = 'status-value unknown';
+          document.getElementById('winBranch').textContent = '--';
+          document.getElementById('winCommit').textContent = '--';
+          document.getElementById('winCommitDate').textContent = '--';
+          document.getElementById('winBehind').textContent = '📡 オフライン';
+          document.getElementById('winBehind').className = 'git-value behind-unknown';
+        }
+
+        // --- ボタン排他制御 ---
+        updateButtonStates(raspi.bot_running, win.online, win.bot_running);
+
+      } catch (e) {
+        console.error('Status fetch error:', e);
+        if (isFirstLoad) {
+          document.getElementById('connectingOverlay').classList.add('visible');
+        }
+      }
+    }
+
+    function updateButtonStates(raspiRunning, winOnline, winRunning) {
+      // Raspi側ボタン
+      const raspiStart = document.getElementById('raspiStartBtn');
+      const raspiStop = document.getElementById('raspiStopBtn');
+      const raspiPull = document.getElementById('raspiPullBtn');
+      if (!raspiStart.classList.contains('loading')) {
+        raspiStart.disabled = raspiRunning;  // 起動中なら起動ボタン無効
+      }
+      if (!raspiStop.classList.contains('loading')) {
+        raspiStop.disabled = !raspiRunning;  // 停止中なら停止ボタン無効
+      }
+      if (!raspiPull.classList.contains('loading')) {
+        raspiPull.disabled = false;  // Pullは常に有効
+      }
+
+      // Windows側ボタン
+      const winStart = document.getElementById('winStartBtn');
+      const winStop = document.getElementById('winStopBtn');
+      const winPull = document.getElementById('winPullBtn');
+      if (!winOnline) {
+        // オフライン時は全無効
+        [winStart, winStop, winPull].forEach(b => { if (!b.classList.contains('loading')) b.disabled = true; });
+      } else {
+        if (!winStart.classList.contains('loading')) {
+          winStart.disabled = winRunning;  // 起動中なら起動ボタン無効
+        }
+        if (!winStop.classList.contains('loading')) {
+          winStop.disabled = !winRunning;  // 停止中なら停止ボタン無効
+        }
+        if (!winPull.classList.contains('loading')) {
+          winPull.disabled = false;
+        }
+      }
+    }
+
+    // ============================================================
+    // Log Window
+    // ============================================================
+    let logStarted = false;
+
+    function getTimeStr() {
+      const now = new Date();
+      return now.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    function addLog(server, type, message, output) {
+      const logWindow = document.getElementById('logWindow');
+      // 初回ログ時にプレースホルダーを消す
+      if (!logStarted) {
+        logWindow.innerHTML = '';
+        logStarted = true;
+      }
+
+      const serverLabel = server === 'windows' ? 'Windows' : 'Raspi';
+      const serverCls = server === 'windows' ? 'windows' : 'raspi';
+      const typeCls = type === 'success' ? 'log-success' : type === 'error' ? 'log-error' : 'log-info';
+
+      let html = `<div class="log-entry">`;
+      html += `<span class="log-time">[${getTimeStr()}]</span> `;
+      html += `<span class="log-server ${serverCls}">[${serverLabel}]</span> `;
+      html += `<span class="${typeCls}">${escapeHtml(message)}</span>`;
+      if (output) {
+        html += `<div class="log-output">${escapeHtml(output)}</div>`;
+      }
+      html += `</div>`;
+
+      logWindow.insertAdjacentHTML('beforeend', html);
+      logWindow.scrollTop = logWindow.scrollHeight;
+    }
+
+    function clearLog() {
+      const logWindow = document.getElementById('logWindow');
+      logWindow.innerHTML = '<div class="log-entry log-empty">操作ログがここに表示されます...</div>';
+      logStarted = false;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // ============================================================
+    // Actions
+    // ============================================================
+    async function sendAction(server, action, btn) {
+      const msgEl = document.getElementById(server === 'windows' ? 'winMessage' : 'raspiMessage');
+      msgEl.innerHTML = '';
+
+      const actionLabels = { start: '起動', stop: '停止', pull: 'Pull+再起動' };
+      addLog(server, 'info', `${actionLabels[action]} を実行中...`, '');
+
+      // Loading state
+      btn.classList.add('loading');
+      btn.disabled = true;
+
+      const labels = {
+        start: '起動中...',
+        stop: '停止中...',
+        pull: 'Pull中...'
+      };
+
+      const originalText = btn.childNodes[btn.childNodes.length - 1].textContent;
+      btn.childNodes[btn.childNodes.length - 1].textContent = ' ' + labels[action];
+
+      try {
+        const res = await fetch(`/api/${server}/${action}`, { method: 'POST' });
+        const data = await res.json();
+
+        if (data.success) {
+          showMessage(msgEl, 'success', data.message);
+          addLog(server, 'success', data.message, data.output || '');
+        } else {
+          showMessage(msgEl, 'error', data.message);
+          addLog(server, 'error', data.message, data.output || '');
+        }
+
+        // Refresh status immediately
+        await fetchStatus();
+
+      } catch (e) {
+        showMessage(msgEl, 'error', `通信エラー: ${e.message}`);
+        addLog(server, 'error', `通信エラー: ${e.message}`, '');
+      } finally {
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        btn.childNodes[btn.childNodes.length - 1].textContent = ' ' + originalText.trim();
+      }
+    }
+
+    function showMessage(el, type, text) {
+      el.innerHTML = `<div class="message ${type}">${text}</div>`;
+      // Auto-hide after 8 seconds
+      setTimeout(() => {
+        if (el.firstChild) {
+          el.firstChild.style.transition = 'opacity 0.5s';
+          el.firstChild.style.opacity = '0';
+          setTimeout(() => { el.innerHTML = ''; }, 500);
+        }
+      }, 8000);
+    }
+
+    // ============================================================
+    // Init
+    // ============================================================
+    document.getElementById('connectingOverlay').classList.add('visible');
+
+    fetchStatus();
+    pollTimer = setInterval(fetchStatus, 60000);
+  </script>
+</body>
+
+</html>
