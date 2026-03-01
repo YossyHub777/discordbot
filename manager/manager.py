@@ -69,13 +69,14 @@ def run_local(cmd: str, timeout: int = 30) -> tuple[int, str]:
 
 
 def check_windows_online() -> bool:
-    """WindowsのVOICEVOXポートへTCP接続して死活確認"""
+    """Windows PCが起動しているか判定（SSHポート22番の死活を確認）"""
     try:
-        with socket.create_connection(
-            (WINDOWS_HOST, WINDOWS_CHECK_PORT), timeout=WINDOWS_CHECK_TIMEOUT
-        ):
-            return True
-    except (socket.timeout, socket.error, OSError):
+        # Windows PC本体が立ち上がっているか（SSHが通るか）でオフライン判定する
+        # VOICEVOXが停止していてもPC本体が起動していれば操作可能とするため22番を使用
+        s = socket.create_connection((WINDOWS_HOST, 22), timeout=2)
+        s.close()
+        return True
+    except Exception:
         return False
 
 
@@ -272,12 +273,12 @@ def raspi_start():
         try:
             _, win_ps = ssh_exec(f"{WINDOWS_COMPOSE} ps")
             if is_container_running(win_ps, "mochigami"):
-                code, output = ssh_exec(f"{WINDOWS_COMPOSE} stop mochigami", timeout=60)
+                code, output = ssh_exec(f"{WINDOWS_COMPOSE} stop", timeout=60)
                 logs.append(f"[Windows Bot 停止] exit={code}\n{output}")
         except Exception as e:
             logs.append(f"[Windows Bot 停止スキップ] {e}")
 
-    code, output = run_local(f"{RASPI_COMPOSE} up -d mochigami", timeout=60)
+    code, output = run_local(f"{RASPI_COMPOSE} up -d", timeout=60)
     logs.append(f"[Raspi Bot 起動] exit={code}\n{output}")
     if code == 0:
         return jsonify({"success": True, "message": "Raspi Bot を起動しました", "output": "\n".join(logs)})
@@ -286,7 +287,7 @@ def raspi_start():
 
 @app.route("/api/raspi/stop", methods=["POST"])
 def raspi_stop():
-    code, output = run_local(f"{RASPI_COMPOSE} stop mochigami", timeout=60)
+    code, output = run_local(f"{RASPI_COMPOSE} stop", timeout=60)
     if code == 0:
         return jsonify({"success": True, "message": "Raspi Bot を停止しました", "output": output})
     return jsonify({"success": False, "message": f"停止エラー", "output": output}), 500
@@ -325,7 +326,7 @@ def raspi_pull():
 
 @app.route("/api/raspi/restart", methods=["POST"])
 def raspi_restart():
-    code, output = run_local(f"{RASPI_COMPOSE} restart mochigami", timeout=120)
+    code, output = run_local(f"{RASPI_COMPOSE} restart", timeout=120)
     if code == 0:
         return jsonify({"success": True, "message": "Raspi Bot を再起動しました", "output": output})
     return jsonify({"success": False, "message": "再起動エラー", "output": output}), 500
@@ -342,10 +343,10 @@ def windows_start():
     # 排他制御: Raspi側Botが動いていれば先に停止
     _, raspi_ps = run_local(f"{RASPI_COMPOSE} ps")
     if is_container_running(raspi_ps, "mochigami"):
-        code, output = run_local(f"{RASPI_COMPOSE} stop mochigami", timeout=60)
+        code, output = run_local(f"{RASPI_COMPOSE} stop", timeout=60)
         logs.append(f"[Raspi Bot 停止] exit={code}\n{output}")
 
-    code, output = ssh_exec(f"{WINDOWS_COMPOSE} up -d mochigami", timeout=60)
+    code, output = ssh_exec(f"{WINDOWS_COMPOSE} up -d", timeout=60)
     logs.append(f"[Windows Bot 起動] exit={code}\n{output}")
     if code == 0:
         return jsonify({"success": True, "message": "Windows Bot を起動しました", "output": "\n".join(logs)})
@@ -357,7 +358,7 @@ def windows_stop():
     if not check_windows_online():
         return jsonify({"success": False, "message": "Windows PCがオフラインです", "output": ""}), 503
 
-    code, output = ssh_exec(f"{WINDOWS_COMPOSE} stop mochigami", timeout=60)
+    code, output = ssh_exec(f"{WINDOWS_COMPOSE} stop", timeout=60)
     if code == 0:
         return jsonify({"success": True, "message": "Windows Bot を停止しました", "output": output})
     return jsonify({"success": False, "message": "停止エラー", "output": output}), 500
@@ -405,7 +406,7 @@ def windows_restart():
     if not check_windows_online():
         return jsonify({"success": False, "message": "Windows PCがオフラインです", "output": ""}), 503
 
-    code, output = ssh_exec(f"{WINDOWS_COMPOSE} restart mochigami", timeout=120)
+    code, output = ssh_exec(f"{WINDOWS_COMPOSE} restart", timeout=120)
     if code == 0:
         return jsonify({"success": True, "message": "Windows Bot を再起動しました", "output": output})
     return jsonify({"success": False, "message": "再起動エラー", "output": output}), 500
