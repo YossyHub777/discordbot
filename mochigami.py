@@ -758,14 +758,17 @@ async def on_ready():
     load_bot_config()
     load_user_voices()
     
-    # スラッシュコマンドの同期（グローバル＋ギルド即時反映）
+    # スラッシュコマンドの同期（二重表示防止のためグローバルに一本化）
     try:
+        # 古いギルド固有コマンドをクリアして重複を防ぐ
+        for guild in bot.guilds:
+            bot.tree.clear_commands(guild=guild)
+            await bot.tree.sync(guild=guild)
+        print(f"📡 ギルド固有コマンドをクリアしました ({len(bot.guilds)}サーバー)")
+        
+        # グローバルコマンドとして同期
         synced = await bot.tree.sync()
         print(f"📡 グローバル同期完了 ({len(synced)}個)")
-        for guild in bot.guilds:
-            bot.tree.copy_global_to(guild=guild)
-            await bot.tree.sync(guild=guild)
-        print(f"📡 ギルド即時同期完了 ({len(bot.guilds)}サーバー)")
     except Exception as e:
         print(f"⚠️ スラッシュコマンド同期失敗: {e}")
     
@@ -936,7 +939,7 @@ class StyleSelectView(discord.ui.View):
         )
 
 
-@bot.tree.command(name="マイボイス", description="自分のチャット読み上げ声を設定するのじゃ")
+@bot.tree.command(name="myvoice", description="自分のチャット読み上げ声を設定するのじゃ")
 async def my_voice(interaction: discord.Interaction):
     if not character_styles:
         await interaction.response.send_message("⚠️ 話者一覧がまだ取得できておらぬ。少し待つのじゃ。", ephemeral=True)
@@ -958,7 +961,7 @@ async def my_voice(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="もちボイス", description="もち神さまの声を変更するのじゃ")
+@bot.tree.command(name="botvoice", description="もち神さまの声を変更するのじゃ")
 async def bot_voice(interaction: discord.Interaction):
     if not character_styles:
         await interaction.response.send_message("⚠️ 話者一覧がまだ取得できておらぬ。少し待つのじゃ。", ephemeral=True)
@@ -974,7 +977,7 @@ async def bot_voice(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="デザートアルバム", description="デザートのアルバムを表示するのじゃ")
+@bot.tree.command(name="album", description="デザートのアルバムを表示するのじゃ")
 async def desert_album(interaction: discord.Interaction):
     msg = (
         "🎵 デザートのアルバムじゃ。聴くがよい。\n\n"
@@ -986,7 +989,7 @@ async def desert_album(interaction: discord.Interaction):
     await interaction.response.send_message(msg)
 
 
-@bot.tree.command(name="ソーチョーの幻想盤", description="ソーチョーの幻想盤のURLを表示するのじゃ")
+@bot.tree.command(name="socho", description="ソーチョーの幻想盤のURLを表示するのじゃ")
 async def fauxhollows(interaction: discord.Interaction):
     await interaction.response.send_message("🦊 **ソーチョーの幻想盤**\nhttps://knt-a.com/fauxhollows/")
 
@@ -994,7 +997,7 @@ async def fauxhollows(interaction: discord.Interaction):
 # SLASH COMMANDS (会話検知)
 # ==========================================
 
-@bot.tree.command(name="会話オン", description="会話検知モードをオンにするのじゃ")
+@bot.tree.command(name="vchat_on", description="会話検知モードをオンにするのじゃ")
 async def voice_chat_on(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc is None or not vc.is_connected():
@@ -1014,7 +1017,7 @@ async def voice_chat_on(interaction: discord.Interaction):
         voice_chat_monitor_task.start()
 
 
-@bot.tree.command(name="会話オフ", description="会話検知モードをオフにするのじゃ")
+@bot.tree.command(name="vchat_off", description="会話検知モードをオフにするのじゃ")
 async def voice_chat_off(interaction: discord.Interaction):
     state = get_guild_state(interaction.guild_id)
     state["voice_chat_mode"] = False
@@ -1543,7 +1546,7 @@ class MainMenuSelect(discord.ui.Select):
             discord.SelectOption(label="音楽の音量変更", value="volume", emoji="🔊"),
             discord.SelectOption(label="音楽を停止する", value="stop", emoji="🛑"),
             discord.SelectOption(label="マイボイスの変更", value="myvoice", emoji="🎤"),
-            discord.SelectOption(label="もち神さまの声変更", value="botvoice", emoji="🗣️"),
+            discord.SelectOption(label="ボットボイスの変更", value="botvoice", emoji="🗣️"),
             discord.SelectOption(label="会話検知 (オン/オフ)", value="voice_chat", emoji="💬"),
             discord.SelectOption(label="もちもちに話しかける", value="mochimochi_chat", emoji="🤖"),
             discord.SelectOption(label="ソーチョーの幻想盤", value="fauxhollows", emoji="🦊"),
@@ -1689,7 +1692,7 @@ async def slash_janken(interaction: discord.Interaction):
     await start_janken(interaction)
 
 
-@bot.tree.command(name="もちもち", description="声で質問するのじゃ")
+@bot.tree.command(name="listen", description="声で質問するのじゃ")
 async def slash_mochimochi_listen(interaction: discord.Interaction):
     """ユーザーの音声を録音し、Gemini APIで文字起こし→AI応答する"""
     guild_id = interaction.guild_id
@@ -1848,6 +1851,197 @@ async def slash_mochimochi_listen(interaction: discord.Interaction):
 
 
 # ==========================================
+# NEW SLASH COMMANDS
+# ==========================================
+
+@bot.tree.command(name="play", description="音楽を再生するのじゃ")
+@app_commands.describe(query="YouTubeのURLまたは検索キーワード")
+async def slash_play(interaction: discord.Interaction, query: str):
+    query = query.strip()
+    is_url = query.startswith("http")
+    await interaction.response.defer(ephemeral=not is_url)
+
+    guild = interaction.guild
+    state = get_guild_state(guild.id)
+    vc = guild.voice_client
+
+    if vc is None:
+        if interaction.user.voice:
+            try:
+                vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+                state["active_channel_id"] = interaction.channel.id
+            except Exception as e:
+                print(f"Voice Connect Error: {e}")
+                await interaction.followup.send("ボイスチャンネルに接続できなかったのじゃ。", ephemeral=True)
+                return
+        else:
+            await interaction.followup.send("ボイスチャンネルに入るのじゃ。", ephemeral=True)
+            return
+
+    if is_url:
+        msg = await interaction.followup.send(f"「{query}」のレコードを探しておる...")
+        try:
+            loop = asyncio.get_running_loop()
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(query, download=False))
+            if 'entries' in data:
+                data = data['entries'][0]
+            url = data['url']
+            title = data.get('title', '不明な曲')
+            if vc.is_playing(): vc.stop()
+            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(url, **ffmpeg_opts), volume=MUSIC_VOLUME)
+            def after_playing(error):
+                state["is_playing_music"] = False
+            vc.play(source, after=after_playing)
+            state["is_playing_music"] = True
+            await msg.edit(content=f"🎵 **再生中**: {title} (音量: {int(MUSIC_VOLUME*100)}%)")
+        except Exception as e:
+            print(f"Play Error: {e}")
+            await msg.edit(content="見つからなんだ、または再生できぬ。")
+            state["is_playing_music"] = False
+        return
+
+    search_query = f"ytsearch5:{query} bgm"
+    try:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_query, download=False))
+        entries = data.get("entries", [])
+        if not entries:
+            await interaction.followup.send("見つからなんだ。", ephemeral=True)
+            return
+        view = MusicSelectView(entries, interaction.user.id)
+        await interaction.followup.send("🎵 再生する曲を選ぶのじゃ：", view=view, ephemeral=True)
+    except Exception as e:
+        print(f"Search Error: {e}")
+        await interaction.followup.send("検索に失敗したのう。", ephemeral=True)
+
+@bot.tree.command(name="stop", description="音楽を停止するのじゃ")
+async def slash_stop(interaction: discord.Interaction):
+    state = get_guild_state(interaction.guild_id)
+    vc = interaction.guild.voice_client if interaction.guild else None
+    if vc and vc.is_playing():
+        vc.stop()
+        state["is_playing_music"] = False
+        await interaction.response.send_message("止めたぞ。", ephemeral=True)
+        await interaction.channel.send("🛑 音楽を止めたぞ。")
+    else:
+        await interaction.response.send_message("何も流れておらぬ。", ephemeral=True)
+
+@bot.tree.command(name="volume", description="音楽の音量を変更するのじゃ")
+@app_commands.describe(volume="音量（0〜80）")
+async def slash_volume(interaction: discord.Interaction, volume: int):
+    if not 0 <= volume <= 80:
+        await interaction.response.send_message("❌ 0～80の整数を指定するのじゃ。", ephemeral=True)
+        return
+        
+    global MUSIC_VOLUME
+    MUSIC_VOLUME = volume / 100.0
+    state = get_guild_state(interaction.guild_id)
+    vc = interaction.guild.voice_client if interaction.guild else None
+    if vc and vc.source and state["is_playing_music"]:
+        update_source_volume(vc.source, MUSIC_VOLUME)
+        
+    await interaction.response.send_message("操作を受け付けたぞ。", ephemeral=True)
+    await interaction.channel.send(f"🔊 音量を **{volume}%** に変更したぞ。")
+
+@bot.tree.command(name="dicebattle", description="ダイスバトルを開催するのじゃ")
+async def slash_dicebattle(interaction: discord.Interaction):
+    await start_dice_battle(interaction)
+
+@bot.tree.command(name="leave", description="もち神さまをVCから退出させるのじゃ")
+async def slash_leave(interaction: discord.Interaction):
+    guild = interaction.guild
+    vc = guild.voice_client if guild else None
+    state = get_guild_state(interaction.guild_id)
+    
+    if vc:
+        await interaction.response.send_message("操作を受け付けたぞ。", ephemeral=True)
+        await interaction.channel.send("👋 さらばじゃ。")
+        if state["voice_chat_mode"]:
+            stop_rolling_buffer(vc)
+        
+        state["voice_chat_mode"] = False
+        state["voice_last_triggered"] = None
+        state["voice_last_audio_time"] = None
+        state["active_channel_id"] = None
+        state["is_playing_music"] = False
+        state["voice_buffer_active"] = False
+        if state["rolling_sink"]:
+            state["rolling_sink"].clear()
+            state["rolling_sink"] = None
+            
+        await vc.disconnect()
+    else:
+        await interaction.response.send_message("わしはまだおらんぞ。", ephemeral=True)
+
+def roll_dice(num: int) -> tuple[int, str]:
+    res = random.randint(1, num)
+    low_words = ["床ペロ", "雑魚よのう", "寄生か？", "無能じゃ", "ゴミじゃの", "非力すぎ", "出直せ雑魚"]
+    mid_words = ["普通じゃ", "及第点じゃ", "凡夫じゃの", "無難じゃ", "まあまあ", "安泰じゃ", "悪くない"]
+    high_words = ["良いぞ", "高めじゃ", "期待大", "さすが", "運が良い", "追い風", "上出来"]
+    super_words = ["天才じゃ", "凄まじい", "豪運のう", "驚きじゃ", "最高じゃ", "神引き", "震える"]
+
+    if res <= 35: reaction = random.choice(low_words)
+    elif 36 <= res <= 70: reaction = random.choice(mid_words)
+    elif 71 <= res <= 90: reaction = random.choice(high_words)
+    else: reaction = random.choice(super_words)
+    return res, reaction
+
+async def summarize_dice(channel) -> str | None:
+    limit_time = discord.utils.utcnow() - timedelta(minutes=10)
+    history_list = [f"{msg.author.display_name}: {msg.content}" async for msg in channel.history(limit=100, after=limit_time)]
+    if not history_list:
+        return None
+    history_newest_first = list(reversed(history_list))
+    prompt = (
+        "以下のチャット履歴（上が最新、下が過去）から、各ユーザーの最新のダイス結果（一番上にある『🔮 ... 【 数字 】』）を1つだけ特定せよ。\n"
+        "それらの数字を集計し、降順（大きい順）でランキングを作成せよ。\n\n"
+        "【重要：出力形式について】\n"
+        "・Discordでズレるため、表組み（| や -）は絶対に使用するな。\n"
+        "・以下のシンプルな箇条書き形式のみを使用せよ。\n"
+        "  🥇 1位: [名前] 【 [数字] 】\n"
+        "  🥈 2位: ...\n\n"
+        "最後に優勝者を称え、最下位には軽い皮肉の言葉を述べよ。\n\n"
+        + "\n".join(history_newest_first)
+    )
+    response = await client.aio.models.generate_content(
+        model=MODEL_NAME, contents=prompt, config=config_summary
+    )
+    log_token_usage(response, "Summary")
+    return response.text
+
+@bot.tree.command(name="dice", description="ダイスを振るのじゃ")
+@app_commands.describe(num="ダイスの最大値（デフォルト100）")
+async def slash_dice(interaction: discord.Interaction, num: int = 100):
+    res, reaction = roll_dice(num)
+    text = f"🔮 **{interaction.user.display_name}** の目は **【 {res} 】** じゃ！ 「{reaction}」"
+    await interaction.response.send_message(text)
+    
+    state = get_guild_state(interaction.guild_id)
+    if not state["is_playing_music"]:
+        audio_data = await generate_wav(f"{res}。{reaction}。", SPEAKER_ID)
+        if audio_data: play_audio(interaction.guild, audio_data)
+
+@bot.tree.command(name="diceresult", description="直近10分のダイス結果を集計するのじゃ")
+async def slash_diceresult(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        result_text = await summarize_dice(interaction.channel)
+        if not result_text:
+            await interaction.followup.send("直近10分間にダイスの記録はないのう。")
+            return
+        await interaction.followup.send(result_text)
+        
+        state = get_guild_state(interaction.guild_id)
+        if not state["is_playing_music"]:
+            lines = result_text.strip().splitlines()
+            last_line = lines[-1] if lines else "集計完了じゃ。"
+            audio_data = await generate_wav(last_line, SPEAKER_ID)
+            if audio_data: play_audio(interaction.guild, audio_data)
+    except Exception as e:
+        print(e)
+        await interaction.followup.send("帳簿が開けぬ。")
+
+# ==========================================
 # PREFIX COMMANDS (play / stop / vol / mjoin / pause)
 # ==========================================
 @bot.command()
@@ -1944,12 +2138,14 @@ async def mjoin(ctx):
         
         info_msg = (
             "\n\n"
-            f"/menu メニュー表示\n"
-            f"/dice [最大値]\n"
-            f"/ダイス結果\n"
-            f"!play [URL or Keyword]\n"
-            f"!stop\n"
-            f"!vol [0-80]"
+            "/menu メニュー表示\n"
+            "/play [URL or キーワード]\n"
+            "/stop\n"
+            "/volume [0-80]\n"
+            "/dice [最大値]\n"
+            "/diceresult\n"
+            "/dicebattle\n"
+            "/leave\n"
         )
         
         await ctx.send(greet + info_msg)
@@ -2079,18 +2275,8 @@ async def on_message(message):
     if message.content.startswith(TRIGGER_DICE):
         num_str = message.content.replace(TRIGGER_DICE, "").strip()
         num = int(num_str) if num_str.isdigit() else 100
-        res = random.randint(1, num)
         
-        low_words = ["床ペロ", "雑魚よのう", "寄生か？", "無能じゃ", "ゴミじゃの", "非力すぎ", "出直せ雑魚"]
-        mid_words = ["普通じゃ", "及第点じゃ", "凡夫じゃの", "無難じゃ", "まあまあ", "安泰じゃ", "悪くない"]
-        high_words = ["良いぞ", "高めじゃ", "期待大", "さすが", "運が良い", "追い風", "上出来"]
-        super_words = ["天才じゃ", "凄まじい", "豪運のう", "驚きじゃ", "最高じゃ", "神引き", "震える"]
-
-        if res <= 35: reaction = random.choice(low_words)
-        elif 36 <= res <= 70: reaction = random.choice(mid_words)
-        elif 71 <= res <= 90: reaction = random.choice(high_words)
-        else: reaction = random.choice(super_words)
-
+        res, reaction = roll_dice(num)
         text = f"🔮 **{message.author.display_name}** の目は **【 {res} 】** じゃ！ 「{reaction}」"
         await message.channel.send(text)
         
@@ -2103,38 +2289,16 @@ async def on_message(message):
     if message.content == TRIGGER_SUMMARY:
         async with message.channel.typing():
             try:
-                limit_time = discord.utils.utcnow() - timedelta(minutes=10)
-                history_list = [f"{msg.author.display_name}: {msg.content}" async for msg in message.channel.history(limit=100, after=limit_time)]
-                if not history_list:
+                result_text = await summarize_dice(message.channel)
+                if not result_text:
                     await message.channel.send("直近10分間にダイスの記録はないのう。")
                     return
-                
-                history_newest_first = list(reversed(history_list))
-                
-                # 表組み禁止・皮肉プロンプト・箇条書き指定
-                prompt = (
-                    "以下のチャット履歴（上が最新、下が過去）から、各ユーザーの最新のダイス結果（一番上にある『🔮 ... 【 数字 】』）を1つだけ特定せよ。\n"
-                    "それらの数字を集計し、降順（大きい順）でランキングを作成せよ。\n\n"
-                    "【重要：出力形式について】\n"
-                    "・Discordでズレるため、表組み（| や -）は絶対に使用するな。\n"
-                    "・以下のシンプルな箇条書き形式のみを使用せよ。\n"
-                    "  🥇 1位: [名前] 【 [数字] 】\n"
-                    "  🥈 2位: ...\n\n"
-                    "最後に優勝者を称え、最下位には軽い皮肉の言葉を述べよ。\n\n"
-                    + "\n".join(history_newest_first)
-                )
-                
-                response = await client.aio.models.generate_content(
-                    model=MODEL_NAME, contents=prompt, config=config_summary
-                )
-                log_token_usage(response, "Summary")
-                await message.channel.send(response.text)
+                await message.channel.send(result_text)
                 
                 if not state["is_playing_music"]:
                     # 最後の1行だけ読み上げ
-                    lines = response.text.strip().splitlines()
+                    lines = result_text.strip().splitlines()
                     last_line = lines[-1] if lines else "集計完了じゃ。"
-                    
                     audio_data = await generate_wav(last_line, SPEAKER_ID)
                     if audio_data: play_audio(message.guild, audio_data)
             except Exception as e:
