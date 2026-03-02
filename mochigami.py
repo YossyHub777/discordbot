@@ -1542,33 +1542,34 @@ class MochimochiModal(discord.ui.Modal, title="もちもちに話しかける"):
 class MainMenuSelect(discord.ui.Select):
     def __init__(self):
         options = [
+            discord.SelectOption(label="もちもちに話しかける", value="mochimochi_chat", emoji="🤖"),
             discord.SelectOption(label="音楽を再生する", value="play", emoji="🎵"),
             discord.SelectOption(label="音楽の音量変更", value="volume", emoji="🔊"),
             discord.SelectOption(label="音楽を停止する", value="stop", emoji="🛑"),
-            discord.SelectOption(label="マイボイスの変更", value="myvoice", emoji="🎤"),
-            discord.SelectOption(label="ボットボイスの変更", value="botvoice", emoji="🗣️"),
-            discord.SelectOption(label="会話検知 (オン/オフ)", value="voice_chat", emoji="💬"),
-            discord.SelectOption(label="もちもちに話しかける", value="mochimochi_chat", emoji="🤖"),
-            discord.SelectOption(label="ダイスバトル", value="dice_battle", emoji="🎲"),
-            discord.SelectOption(label="じゃんけん", value="janken_game", emoji="✊"),
         ]
 
         # menu_links.json から動的にリンク項目を追加
-        existing_values = {o.value for o in options} | {"disconnect", "cancel"}
+        existing_values = {o.value for o in options} | {"dice_battle", "janken_game", "myvoice", "botvoice", "voice_chat", "disconnect", "cancel"}
         for item in load_menu_links():
             if item["value"] in existing_values:
                 continue  # value重複はスキップ
-            if len(options) >= 23:
-                break  # Discordのセレクトメニュー上限 (キャンセルの余裕を持たせる)
+            if len(options) >= 16: # 下に7つ追加するため余裕を持たせる
+                break  # Discordのセレクトメニュー上限
             options.append(discord.SelectOption(
                 label=item["label"],
                 value=item["value"],
                 emoji=item.get("emoji", "🔗")
             ))
 
-        # disconnect を常に最後に追加
-        options.append(discord.SelectOption(label="もち神さまとお別れする", value="disconnect", emoji="👋"))
-        options.append(discord.SelectOption(label="キャンセル", value="cancel", emoji="❌"))
+        options += [
+            discord.SelectOption(label="ダイスバトル", value="dice_battle", emoji="🎲"),
+            discord.SelectOption(label="じゃんけん", value="janken_game", emoji="✊"),
+            discord.SelectOption(label="マイボイスの変更", value="myvoice", emoji="🎤"),
+            discord.SelectOption(label="ボットボイスの変更", value="botvoice", emoji="🗣️"),
+            discord.SelectOption(label="会話検知 (オン/オフ)", value="voice_chat", emoji="💬"),
+            discord.SelectOption(label="もち神さまとお別れする", value="disconnect", emoji="👋"),
+            discord.SelectOption(label="キャンセル", value="cancel", emoji="❌"),
+        ]
 
         super().__init__(placeholder="メニューを選ぶのじゃ", min_values=1, max_values=1, options=options)
 
@@ -1689,6 +1690,43 @@ async def slash_menu(interaction: discord.Interaction):
     view = MainMenuView()
     await interaction.response.send_message("⚙️ **もち神さま ダッシュボード**\n操作を選ぶのじゃ：", view=view, ephemeral=True)
     view.message = await interaction.original_response()
+
+async def show_links(interaction: discord.Interaction):
+    items = load_menu_links()
+    if not items:
+        await interaction.response.send_message("リンクが登録されておらぬ。", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    for item in items:
+        emoji = item.get("emoji", "🔗")
+        label = item.get("label", "リンク")
+        view = discord.ui.View()
+
+        if "links" in item and isinstance(item["links"], list):
+            for link in item["links"]:
+                view.add_item(discord.ui.Button(
+                    style=discord.ButtonStyle.link,
+                    label=link.get("title", "リンク"),
+                    url=link.get("url", "")
+                ))
+        elif "url" in item:
+            view.add_item(discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="開く",
+                url=item["url"]
+            ))
+
+        await interaction.followup.send(f"{emoji} **{label}**", view=view)
+
+@bot.tree.command(name="link", description="リンク一覧を表示するのじゃ")
+async def slash_link(interaction: discord.Interaction):
+    await show_links(interaction)
+
+@bot.tree.command(name="links", description="リンク一覧を表示するのじゃ")
+async def slash_links(interaction: discord.Interaction):
+    await show_links(interaction)
 
 
 
