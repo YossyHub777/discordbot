@@ -1549,18 +1549,17 @@ class MainMenuSelect(discord.ui.Select):
             discord.SelectOption(label="ボットボイスの変更", value="botvoice", emoji="🗣️"),
             discord.SelectOption(label="会話検知 (オン/オフ)", value="voice_chat", emoji="💬"),
             discord.SelectOption(label="もちもちに話しかける", value="mochimochi_chat", emoji="🤖"),
-            discord.SelectOption(label="ソーチョーの幻想盤", value="fauxhollows", emoji="🦊"),
             discord.SelectOption(label="ダイスバトル", value="dice_battle", emoji="🎲"),
             discord.SelectOption(label="じゃんけん", value="janken_game", emoji="✊"),
         ]
 
         # menu_links.json から動的にリンク項目を追加
-        existing_values = {o.value for o in options} | {"disconnect"}
+        existing_values = {o.value for o in options} | {"disconnect", "cancel"}
         for item in load_menu_links():
             if item["value"] in existing_values:
                 continue  # value重複はスキップ
-            if len(options) >= 24:
-                break  # Discordのセレクトメニュー上限
+            if len(options) >= 23:
+                break  # Discordのセレクトメニュー上限 (キャンセルの余裕を持たせる)
             options.append(discord.SelectOption(
                 label=item["label"],
                 value=item["value"],
@@ -1569,6 +1568,7 @@ class MainMenuSelect(discord.ui.Select):
 
         # disconnect を常に最後に追加
         options.append(discord.SelectOption(label="もち神さまとお別れする", value="disconnect", emoji="👋"))
+        options.append(discord.SelectOption(label="キャンセル", value="cancel", emoji="❌"))
 
         super().__init__(placeholder="メニューを選ぶのじゃ", min_values=1, max_values=1, options=options)
 
@@ -1617,10 +1617,6 @@ class MainMenuSelect(discord.ui.Select):
                     voice_chat_monitor_task.start()
         elif val == "mochimochi_chat":
             await interaction.response.send_modal(MochimochiModal())
-        elif val == "fauxhollows":
-            await interaction.response.send_message(
-                "🦊 **ソーチョーの幻想盤**\nhttps://knt-a.com/fauxhollows/"
-            )
         elif val == "dice_battle":
             await start_dice_battle(interaction)
         elif val == "janken_game":
@@ -1646,6 +1642,11 @@ class MainMenuSelect(discord.ui.Select):
                 await vc.disconnect()
             else:
                 await interaction.response.send_message("わしはまだおらんぞ。", ephemeral=True)
+        elif val == "cancel":
+            try:
+                await interaction.message.delete()
+            except Exception:
+                await interaction.response.send_message("キャンセルしたのじゃ。", ephemeral=True)
         else:
             # menu_links.json 由来のリンク項目を処理
             for item in load_menu_links():
@@ -1672,13 +1673,22 @@ class MainMenuSelect(discord.ui.Select):
 
 class MainMenuView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=120)
         self.add_item(MainMenuSelect())
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        try:
+            await self.message.edit(content="⏱️ タイムアウトしたのじゃ。", view=self)
+        except Exception:
+            pass
 
 @bot.tree.command(name="menu", description="もち神さまの操作パネルを開くのじゃ")
 async def slash_menu(interaction: discord.Interaction):
     view = MainMenuView()
     await interaction.response.send_message("⚙️ **もち神さま ダッシュボード**\n操作を選ぶのじゃ：", view=view, ephemeral=True)
+    view.message = await interaction.original_response()
 
 
 
