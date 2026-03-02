@@ -839,11 +839,11 @@ class CharacterSelectView(discord.ui.View):
         # ページングボタン
         if self.total_pages > 1:
             if page > 0:
-                prev_btn = discord.ui.Button(label="◀ 前へ", style=discord.ButtonStyle.secondary, custom_id="prev_page")
+                prev_btn = discord.ui.Button(label="◀ 前へ", style=discord.ButtonStyle.secondary, custom_id=f"prev_page_{user_id}")
                 prev_btn.callback = self.prev_page
                 self.add_item(prev_btn)
             if page < self.total_pages - 1:
-                next_btn = discord.ui.Button(label="次へ ▶", style=discord.ButtonStyle.secondary, custom_id="next_page")
+                next_btn = discord.ui.Button(label="次へ ▶", style=discord.ButtonStyle.secondary, custom_id=f"next_page_{user_id}")
                 next_btn.callback = self.next_page
                 self.add_item(next_btn)
     
